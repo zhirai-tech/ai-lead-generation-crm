@@ -1,0 +1,528 @@
+/* Page-specific styles: t-front-outreach owner (campaigns / drafts / approvals /
+ * inbox / deals / automation). Only `.page-` prefixed selectors; shared
+ * primitives live in components.css, pages.css and the other page files.
+ */
+
+/* ------------------------------------------------------------------ shared */
+.page-outreach-pager {
+  margin-top: 12px;
+}
+
+.page-outreach-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+  max-width: 640px;
+}
+
+.page-outreach-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.page-outreach-clickable:hover {
+  border-color: var(--primary-line);
+  background: var(--surface-2);
+}
+
+.page-outreach-facts,
+.page-outreach-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.page-outreach-kpis {
+  margin-bottom: 2px;
+}
+
+.page-outreach-json-empty {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  padding: 8px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+/* --------------------------------------------------------------- campaigns */
+.page-outreach-form-block {
+  grid-column: span 2;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.page-outreach-weekdays {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  min-height: 32px;
+  align-items: center;
+}
+
+.page-outreach-field-span {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.page-outreach-approval {
+  display: flex;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.page-outreach-goal {
+  padding: 8px 10px;
+  border-left: 2px solid var(--primary-line);
+  background: var(--bg-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-dim);
+  font-size: var(--fs-12);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.page-outreach-step {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.page-outreach-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.page-outreach-step-head b {
+  font-size: var(--fs-12);
+  color: var(--text);
+}
+
+.page-outreach-step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.page-outreach-template {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px;
+  font-size: var(--fs-11);
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+.page-outreach-template .k {
+  color: var(--text-muted);
+}
+
+.page-outreach-template .v {
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-step > .page-row-actions {
+  justify-content: flex-end;
+}
+
+/* picker (enrollment) */
+.page-outreach-pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.page-outreach-pick-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-12);
+  text-align: left;
+}
+
+.page-outreach-pick-item:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.page-outreach-pick-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.page-outreach-selected {
+  padding: 6px 9px;
+  border-radius: var(--radius-xs);
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-line);
+  color: var(--primary);
+  font-size: var(--fs-11);
+}
+
+.page-outreach-contact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+}
+
+.page-outreach-contact-list .checkbox {
+  display: flex;
+  align-items: flex-start;
+  line-height: 1.5;
+}
+
+.page-outreach-contact-list .checkbox input {
+  margin-top: 2px;
+  flex: none;
+}
+
+/* ----------------------------------------------------------- drafts/composer */
+.page-outreach-evidence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.page-outreach-editor-head {
+  margin-bottom: 2px;
+}
+
+@media (max-width: 900px) {
+  .page-outreach-evidence {
+    grid-template-columns: 1fr;
+  }
+
+  .page-outreach-form-block {
+    grid-column: auto;
+  }
+}
+
+/* -------------------------------------------------------------------- inbox */
+.page-outreach-inbox-detail > .card {
+  margin: 12px 14px;
+}
+
+.page-outreach-inbox-detail > .notice {
+  margin: 10px 14px 0;
+}
+
+.page-outreach-inbox-detail > .empty {
+  margin: auto;
+}
+
+.page-outreach-inbox-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.page-outreach-unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.16);
+  flex: none;
+}
+
+.page-outreach-inbox-title {
+  min-width: 0;
+}
+
+.page-outreach-inbox-title b {
+  display: block;
+  font-size: var(--fs-13);
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-outreach-inbox-title .muted {
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-inbox-head-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+  font-size: var(--fs-11);
+}
+
+.page-outreach-inbox-actions {
+  flex-wrap: wrap;
+  margin-top: 9px;
+}
+
+.page-outreach-inbox-subject {
+  margin: 2px 0 5px;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-inbox-class-head {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.page-outreach-evidence-list {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  color: var(--text-dim);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+}
+
+.page-outreach-evidence-list li {
+  margin-bottom: 2px;
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-rationale {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--text-dim);
+  font-size: var(--fs-12);
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-suggested {
+  padding: 9px 11px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: var(--fs-12);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-correction {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .page-outreach-correction {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* -------------------------------------------------------------------- deals */
+.page-outreach-kanban {
+  align-items: stretch;
+}
+
+.page-outreach-kanban .kanban-col {
+  flex: 1 1 180px;
+  min-width: 176px;
+}
+
+.page-outreach-kanban-empty {
+  padding: 12px 4px;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  text-align: center;
+}
+
+@media (max-width: 1100px) {
+  .page-outreach-kanban {
+    overflow-x: auto;
+  }
+
+  .page-outreach-kanban .kanban-col {
+    flex: 0 0 220px;
+    min-width: 220px;
+  }
+}
+
+.page-outreach-deal-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.page-outreach-bottom {
+  margin-top: 14px;
+}
+
+.page-outreach-activity-list,
+.page-outreach-task-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.page-outreach-activity {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(26, 39, 64, 0.6);
+}
+
+.page-outreach-activity:last-child,
+.page-outreach-task:last-child {
+  border-bottom: 0;
+}
+
+.page-outreach-activity > .badge {
+  flex: none;
+  margin-top: 1px;
+}
+
+.page-outreach-activity-main,
+.page-outreach-task-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.page-outreach-activity-main b,
+.page-outreach-task-main b {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-activity-main span,
+.page-outreach-task-main span {
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.page-outreach-activity-time {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.page-outreach-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(26, 39, 64, 0.6);
+}
+
+.page-outreach-task-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+  flex: 0 1 auto;
+  max-width: 46%;
+  font-size: 10px;
+}
+
+.page-outreach-task > .page-row-actions {
+  flex: none;
+  align-self: flex-start;
+}
+
+.page-outreach-overdue {
+  color: var(--danger);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .page-outreach-activity,
+  .page-outreach-task {
+    flex-wrap: wrap;
+  }
+
+  .page-outreach-activity-time {
+    margin-left: 0;
+  }
+
+  .page-outreach-task-meta {
+    max-width: 100%;
+    justify-content: flex-start;
+    flex-basis: 100%;
+  }
+}
+
+/* --------------------------------------------------------------- automation */
+.page-outreach-auto-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.page-outreach-auto-legend > .grow {
+  min-width: 12px;
+}
+
+@media (max-width: 640px) {
+  .page-outreach-auto-legend {
+    gap: 5px;
+  }
+}

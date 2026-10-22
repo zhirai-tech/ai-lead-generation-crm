@@ -1,0 +1,28 @@
+ZHIRAI Europe B2B AI Outreach Platform
+Copyright (c) 2026 ZHIRAI (智睿科技). All rights reserved.
+
+PROPRIETARY AND CONFIDENTIAL
+
+This software and its source code, documentation, database schema, prompt
+library and all related materials (the "Software") are proprietary products of
+ZHIRAI (智睿科技), an independent developer / personal technology studio.
+
+No part of the Software may be copied, modified, merged, published, distributed,
+sublicensed, sold, resold, rented, leased, hosted as a service for third parties,
+or used to create derivative works, in whole or in part, without a separate
+written commercial license granted by the copyright holder.
+
+Commercial licensing, source-code distribution and white-label arrangements are
+available only under a signed agreement with ZHIRAI. Contact:
+xtang3125@gmail.com / https://zhirai.cloud
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-party components, if any are added in the future, are listed in
+docs/LICENSE-REGISTER.md and remain under their respective licenses.

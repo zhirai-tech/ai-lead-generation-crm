@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#05070d" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>系统维护台 · ZHIRAI</title>
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/app-icons/32x32.png" />
+    <link rel="stylesheet" href="/admin/admin.css" />
+  </head>
+  <body>
+    <div class="admin-shell">
+      <header class="admin-top">
+        <div class="admin-brand">
+          <img src="/assets/brand/app-icons/128x128.png" alt="ZHIRAI" width="34" height="34" />
+          <div>
+            <b>ZHIRAI 系统维护台</b>
+            <span>欧洲 B2B AI 外贸获客平台 · 自托管运维</span>
+          </div>
+        </div>
+        <div class="admin-actions">
+          <a class="btn" href="/">返回工作台</a>
+          <button class="btn" type="button" id="btn-refresh">刷新</button>
+          <button class="btn primary" type="button" id="btn-backup">创建备份</button>
+        </div>
+      </header>
+
+      <main class="admin-main">
+        <div id="toast-slot" class="toast-slot" aria-live="polite"></div>
+        <div id="login-hint" class="panel hint hidden">
+          需要管理员登录。请先打开 <a href="/">工作台</a> 登录（需要 owner / admin 角色），然后回到本页刷新。
+        </div>
+
+        <section class="panel" id="system-panel">
+          <div class="panel-head">
+            <h2>系统概览</h2>
+            <span class="muted" id="sys-time"></span>
+          </div>
+          <div class="cards" id="system-cards"></div>
+        </section>
+
+        <div class="admin-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>备份</h2>
+              <span class="muted">VACUUM INTO · SQLite 单文件</span>
+            </div>
+            <div id="backups"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>运行日志</h2>
+              <span class="muted">data/logs/app.log（尾部）</span>
+            </div>
+            <pre class="logs" id="logs">加载中…</pre>
+          </section>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>许可证与依赖</h2>
+            <span class="muted">商业分发核查用</span>
+          </div>
+          <div id="license"></div>
+        </section>
+
+        <footer class="admin-foot">
+          Powered by 智睿 · Build Ideas Into Reality · © 2026 智睿科技 保留所有权利。
+        </footer>
+      </main>
+    </div>
+    <script type="module" src="/admin/admin.js"></script>
+  </body>
+</html>

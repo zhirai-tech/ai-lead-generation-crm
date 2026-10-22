@@ -1,0 +1,227 @@
+/* Page-specific styles: t-front-system owner (agents, jobs, settings).
+ * Add selectors prefixed with `.page-` only. Shared primitives live in
+ * components.css / pages.css; this file only adds page-level refinements.
+ */
+
+/* --------------------------------------------------------------- shared bits */
+.page-settings-section {
+  min-width: 0;
+}
+
+.page-form .form-grid,
+.page-settings-section .form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .page-form.form-grid,
+  .page-settings-section .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .page-form .span-2,
+  .page-settings-section .form-grid .span-2 {
+    grid-column: auto;
+  }
+}
+
+.page-json {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #070c16;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.page-json.tall {
+  max-height: 380px;
+}
+
+.page-json-input {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: 1.6;
+}
+
+.page-break {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.page-updated {
+  font-size: var(--fs-11);
+}
+
+.page-row-actions {
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.page-error-text {
+  display: inline-block;
+  max-width: 230px;
+  color: #fca5a5;
+  font-size: var(--fs-11);
+  overflow-wrap: anywhere;
+}
+
+.page-drawer-desc {
+  margin: 0;
+  font-size: var(--fs-12);
+  line-height: 1.65;
+}
+
+.page-filter-input {
+  flex: 1 1 220px;
+  min-width: 170px;
+  max-width: 360px;
+}
+
+/* -------------------------------------------------------------------- agents */
+.page-agent-card {
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+
+.page-agent-card:hover {
+  border-color: var(--primary-line);
+  background: var(--surface-hover);
+}
+
+.page-agent-glyph {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.page-exec-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: var(--fs-11);
+  text-align: left;
+}
+
+.page-exec-row:hover {
+  border-color: var(--primary-line);
+  color: var(--text);
+}
+
+.page-exec-time {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.page-exec-meta {
+  flex: none;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------- jobs */
+.page-type-select {
+  min-width: 220px;
+}
+
+.page-weekdays {
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* ------------------------------------------------------------------ settings */
+.page-role-select {
+  width: 96px;
+  min-width: 96px;
+}
+
+.page-scope-list {
+  gap: 6px;
+}
+
+.page-usage-toolbar {
+  flex-wrap: wrap;
+}
+
+.page-usage-tables {
+  align-items: start;
+}
+
+.page-log {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #070c16;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.page-notes {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: var(--fs-11);
+  line-height: 1.65;
+}
+
+.page-copyright {
+  font-size: var(--fs-11);
+}
+
+@media (max-width: 900px) {
+  .page-usage-tables {
+    grid-template-columns: 1fr;
+  }
+
+  .page-type-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .page-filter-input {
+    max-width: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .page-row-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .page-json,
+  .page-log {
+    font-size: 10.5px;
+    max-height: 300px;
+  }
+
+  .page-json.tall {
+    max-height: 340px;
+  }
+}

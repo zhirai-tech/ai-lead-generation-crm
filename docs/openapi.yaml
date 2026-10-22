@@ -1,0 +1,3119 @@
+openapi: 3.0.3
+info:
+  title: ZHIRAI Europe B2B AI Outreach Platform API
+  version: 1.0.0
+  description: |
+    REST API for the ZHIRAI Europe B2B AI Outreach Platform (智睿欧洲 B2B AI 外贸获客平台).
+
+    Authentication: browser session cookie (`zr_session`, HttpOnly) + `X-CSRF-Token` header
+    for mutating requests, or `Authorization: Bearer zrk_...` API key.
+
+    All successful responses use `{ "ok": true, "data": ... }`; errors use
+    `{ "ok": false, "error": { "code", "message", "details" } }`.
+
+    Coverage: core business endpoints. Operational endpoints (`/ops/*`), `/notifications`,
+    `/audit`, `/usage` are documented in docs/API.md but intentionally omitted here.
+  contact:
+    name: ZHIRAI · 智睿科技 · 独立开发者
+    email: xtang3125@gmail.com
+    url: https://zhirai.cloud
+  license:
+    name: Proprietary (commercial license required)
+    url: https://zhirai.cloud
+servers:
+  - url: http://127.0.0.1:4173
+    description: Local development
+  - url: https://{host}
+    description: Production (reverse proxy with HTTPS)
+    variables:
+      host:
+        default: outreach.example.com
+security:
+  - cookieAuth: []
+  - bearerAuth: []
+tags:
+  - name: auth
+  - name: workspace
+  - name: settings
+  - name: companies
+  - name: contacts
+  - name: products
+  - name: icps
+  - name: discovery
+  - name: imports
+  - name: campaigns
+  - name: drafts
+  - name: inbox
+  - name: deals
+  - name: automation
+  - name: suppression
+  - name: email-accounts
+  - name: dashboard
+  - name: agents
+  - name: jobs
+  - name: public
+paths:
+  /api/v1/health:
+    get:
+      tags: [public]
+      operationId: health
+      security: []
+      summary: Health check
+      responses:
+        '200':
+          description: Service status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/auth/status:
+    get:
+      tags: [auth]
+      operationId: authStatus
+      security: []
+      summary: Initialization and session status
+      responses:
+        '200':
+          description: Status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/auth/setup:
+    post:
+      tags: [auth]
+      operationId: authSetup
+      security: []
+      summary: First-run bootstrap (only when no users exist)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [workspaceName, email, password]
+              properties:
+                workspaceName: { type: string, maxLength: 100 }
+                name: { type: string, maxLength: 80 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 10 }
+      responses:
+        '200':
+          description: Initialized and logged in; response data includes user, workspace, membership and csrfToken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: authLogin
+      security: []
+      summary: Login with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+                workspaceId: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Logged in; response data includes csrfToken
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: authLogout
+      security: []
+      summary: Revoke current session
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      operationId: authMe
+      summary: Current session info
+      responses:
+        '200':
+          description: Session (includes csrfToken)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/password:
+    post:
+      tags: [auth]
+      operationId: authChangePassword
+      summary: Change password (revokes all sessions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 10 }
+      responses:
+        '200':
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/auth/sessions:
+    get:
+      tags: [auth]
+      operationId: authListSessions
+      summary: List active sessions of current user
+      responses:
+        '200':
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/auth/api-keys:
+    get:
+      tags: [auth]
+      operationId: authListApiKeys
+      summary: List API keys
+      responses:
+        '200':
+          description: API keys
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [auth]
+      operationId: authCreateApiKey
+      summary: Create API key (plaintext returned once)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 80 }
+                scopes:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/workspace:
+    get:
+      tags: [workspace]
+      operationId: getWorkspace
+      summary: Current workspace with counts
+      responses:
+        '200':
+          description: Workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [workspace]
+      operationId: updateWorkspace
+      summary: Update workspace name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/workspace/members:
+    get:
+      tags: [workspace]
+      operationId: listMembers
+      summary: List workspace members
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [workspace]
+      operationId: createMember
+      summary: Add member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string, maxLength: 80 }
+                role: { type: string, enum: [admin, member, viewer] }
+                password: { type: string, minLength: 10 }
+      responses:
+        '200':
+          description: Member created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/workspace/members/{userId}:
+    patch:
+      tags: [workspace]
+      operationId: updateMember
+      summary: Update member role/status
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [owner, admin, member, viewer] }
+                status: { type: string, enum: [active, suspended] }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    delete:
+      tags: [workspace]
+      operationId: removeMember
+      summary: Remove member
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/settings:
+    get:
+      tags: [settings]
+      operationId: getSettings
+      summary: Get settings, providers and credentials metadata
+      responses:
+        '200':
+          description: Settings bundle
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [settings]
+      operationId: updateSettings
+      summary: Update one or more setting groups (deep merge)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                outreach:
+                  $ref: '#/components/schemas/OutreachSettings'
+                limits: { type: object }
+                retention: { type: object }
+                ai: { type: object }
+                compliance: { type: object }
+                enrichment: { type: object }
+      responses:
+        '200':
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/settings/providers/{key}:
+    patch:
+      tags: [settings]
+      operationId: updateProvider
+      summary: Enable/disable or configure an external provider
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                isEnabled: { type: boolean }
+                config: { type: object }
+      responses:
+        '200':
+          description: Providers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/settings/credentials:
+    get:
+      tags: [settings]
+      operationId: listCredentials
+      summary: List credentials (masked, never plaintext)
+      responses:
+        '200':
+          description: Credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/settings/credentials/{kind}/{providerKey}:
+    put:
+      tags: [settings]
+      operationId: saveCredential
+      summary: Save encrypted integration credential
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [ai_provider, data_provider, email_api, webhook] }
+        - name: providerKey
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                secret:
+                  type: object
+                  additionalProperties: { type: string }
+                config: { type: object }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/settings/credentials/{id}:
+    delete:
+      tags: [settings]
+      operationId: deleteCredential
+      summary: Delete credential
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/providers:
+    get:
+      tags: [settings]
+      operationId: listProviders
+      summary: External provider catalogue
+      responses:
+        '200':
+          description: Providers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/companies:
+    get:
+      tags: [companies]
+      operationId: listCompanies
+      summary: List companies
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: country
+          in: query
+          description: Comma separated ISO2 codes
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: minScore
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 100 }
+        - name: maxScore
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 100 }
+        - name: hasEmail
+          in: query
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          schema: { type: string }
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc] }
+      responses:
+        '200':
+          description: Company page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyListEnvelope'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [companies]
+      operationId: createCompany
+      summary: Create company
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyEnvelope'
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /api/v1/companies/{id}:
+    get:
+      tags: [companies]
+      operationId: getCompany
+      summary: Company detail aggregate
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Company detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [companies]
+      operationId: updateCompany
+      summary: Update company
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompanyInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanyEnvelope'
+    delete:
+      tags: [companies]
+      operationId: deleteCompany
+      summary: Soft delete company
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/companies/bulk:
+    post:
+      tags: [companies]
+      operationId: bulkCompanies
+      summary: Bulk action (score/archive/assign/status)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, ids]
+              properties:
+                action: { type: string, enum: [score, archive, assign, status] }
+                ids:
+                  type: array
+                  maxItems: 200
+                  items: { type: string }
+                productId: { type: string }
+                ownerUserId: { type: string }
+                status: { type: string }
+      responses:
+        '200':
+          description: Result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/companies/{id}/score:
+    post:
+      tags: [companies]
+      operationId: scoreCompany
+      summary: Rule-based company scoring with explainable factors
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId]
+              properties:
+                productId: { type: string }
+      responses:
+        '200':
+          description: Score result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreEnvelope'
+  /api/v1/companies/{id}/enrich:
+    post:
+      tags: [companies]
+      operationId: enrichCompany
+      summary: Enrich company (contacts / inferred emails)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Enrichment result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/companies/{id}/crawl:
+    post:
+      tags: [companies]
+      operationId: crawlCompany
+      summary: Crawl public company website
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                urls:
+                  type: array
+                  maxItems: 5
+                  items: { type: string, format: uri }
+      responses:
+        '200':
+          description: Crawl result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/companies/{id}/timeline:
+    get:
+      tags: [companies]
+      operationId: getCompanyTimeline
+      summary: Company activity timeline
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Timeline
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/companies/{id}/sources:
+    get:
+      tags: [companies]
+      operationId: getCompanySources
+      summary: Provenance records for a company
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Sources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/companies/{id}/verifications:
+    get:
+      tags: [companies]
+      operationId: getCompanyVerifications
+      summary: Data verification records
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Verifications
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/contacts:
+    get:
+      tags: [contacts]
+      operationId: listContacts
+      summary: List contacts
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: companyId
+          in: query
+          schema: { type: string }
+        - name: emailStatus
+          in: query
+          schema: { type: string }
+        - name: hasEmail
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Contact page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactListEnvelope'
+    post:
+      tags: [contacts]
+      operationId: createContact
+      summary: Create contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactEnvelope'
+  /api/v1/contacts/infer-email:
+    post:
+      tags: [contacts]
+      operationId: inferEmails
+      summary: Infer likely email addresses (status always "inferred")
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [companyId]
+              properties:
+                companyId: { type: string }
+                firstName: { type: string }
+                lastName: { type: string }
+      responses:
+        '200':
+          description: Candidates
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/contacts/{id}:
+    get:
+      tags: [contacts]
+      operationId: getContact
+      summary: Contact detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Contact
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [contacts]
+      operationId: updateContact
+      summary: Update contact
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactEnvelope'
+    delete:
+      tags: [contacts]
+      operationId: deleteContact
+      summary: Soft delete contact
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/contacts/{id}/verify:
+    post:
+      tags: [contacts]
+      operationId: verifyContactEmail
+      summary: Verify contact email (syntax + MX)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/products:
+    get:
+      tags: [products]
+      operationId: listProducts
+      summary: List products
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, draft, archived] }
+      responses:
+        '200':
+          description: Products
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [products]
+      operationId: createProduct
+      summary: Create product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/products/{id}:
+    get:
+      tags: [products]
+      operationId: getProduct
+      summary: Product detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Product
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [products]
+      operationId: updateProduct
+      summary: Update product
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    delete:
+      tags: [products]
+      operationId: deleteProduct
+      summary: Soft delete product
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/icps:
+    get:
+      tags: [icps]
+      operationId: listIcps
+      summary: List ideal customer profiles
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: ICPs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [icps]
+      operationId: createIcp
+      summary: Create ICP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IcpInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/icps/{id}:
+    get:
+      tags: [icps]
+      operationId: getIcp
+      summary: ICP detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: ICP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [icps]
+      operationId: updateIcp
+      summary: Update ICP
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IcpInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    delete:
+      tags: [icps]
+      operationId: deleteIcp
+      summary: Delete ICP
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/discovery/runs:
+    get:
+      tags: [discovery]
+      operationId: listDiscoveryRuns
+      summary: List discovery runs
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Runs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [discovery]
+      operationId: createDiscoveryRun
+      summary: Create discovery run and enqueue job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider: { type: string, enum: [simulation, public_web, csv_import, search_api] }
+                keywords:
+                  type: array
+                  items: { type: string }
+                countries:
+                  type: array
+                  items: { type: string }
+                companyTypes:
+                  type: array
+                  items: { type: string }
+                industry: { type: string }
+                region: { type: string }
+                limit: { type: integer }
+                csvText: { type: string }
+                rows:
+                  type: array
+                  items: { type: object }
+      responses:
+        '200':
+          description: Run created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/discovery/runs/{id}:
+    get:
+      tags: [discovery]
+      operationId: getDiscoveryRun
+      summary: Discovery run detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/discovery/runs/{id}/cancel:
+    post:
+      tags: [discovery]
+      operationId: cancelDiscoveryRun
+      summary: Cancel discovery run
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/discovery/providers:
+    get:
+      tags: [discovery]
+      operationId: listDiscoveryProviders
+      summary: Available discovery providers
+      responses:
+        '200':
+          description: Providers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/imports:
+    get:
+      tags: [imports]
+      operationId: listImports
+      summary: List import runs
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Import runs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [imports]
+      operationId: runImport
+      summary: Run CSV import
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, text]
+              properties:
+                kind: { type: string, enum: [companies, contacts, suppression] }
+                filename: { type: string }
+                text: { type: string }
+      responses:
+        '200':
+          description: Import run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/imports/{id}:
+    get:
+      tags: [imports]
+      operationId: getImport
+      summary: Import run detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Import run
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/export/companies:
+    get:
+      tags: [imports]
+      operationId: exportCompanies
+      summary: Export companies as CSV content
+      responses:
+        '200':
+          description: CSV payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns:
+    get:
+      tags: [campaigns]
+      operationId: listCampaigns
+      summary: List campaigns
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Campaigns (each item includes targetCount/sentCount/stepCount/repliedCount/pendingApprovalCount/productName/icpName)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignListEnvelope'
+    post:
+      tags: [campaigns]
+      operationId: createCampaign
+      summary: Create campaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CampaignInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignEnvelope'
+  /api/v1/campaigns/{id}:
+    get:
+      tags: [campaigns]
+      operationId: getCampaign
+      summary: Campaign detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Campaign
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [campaigns]
+      operationId: updateCampaign
+      summary: Update campaign (including status)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CampaignInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CampaignEnvelope'
+    delete:
+      tags: [campaigns]
+      operationId: archiveCampaign
+      summary: Archive campaign
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns/{id}/steps:
+    get:
+      tags: [campaigns]
+      operationId: listCampaignSteps
+      summary: List campaign steps
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Steps
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [campaigns]
+      operationId: addCampaignStep
+      summary: Add campaign step
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CampaignStepInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns/{id}/steps/{stepId}:
+    patch:
+      tags: [campaigns]
+      operationId: updateCampaignStep
+      summary: Update campaign step
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: stepId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CampaignStepInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    delete:
+      tags: [campaigns]
+      operationId: removeCampaignStep
+      summary: Remove campaign step
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: stepId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns/{id}/enroll:
+    post:
+      tags: [campaigns]
+      operationId: enrollCampaign
+      summary: Enroll companies/contacts into campaign
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                companyIds:
+                  type: array
+                  items: { type: string }
+                contactIds:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: Enrollment summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns/{id}/pause:
+    post:
+      tags: [campaigns]
+      operationId: pauseCampaign
+      summary: Pause campaign
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns/{id}/resume:
+    post:
+      tags: [campaigns]
+      operationId: resumeCampaign
+      summary: Resume campaign
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns/{id}/stats:
+    get:
+      tags: [campaigns]
+      operationId: campaignStats
+      summary: Campaign statistics
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/campaigns/{id}/targets:
+    get:
+      tags: [campaigns]
+      operationId: listCampaignTargets
+      summary: Campaign targets
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Targets
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/drafts:
+    get:
+      tags: [drafts]
+      operationId: listDrafts
+      summary: List drafts
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: campaignId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Drafts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftListEnvelope'
+    post:
+      tags: [drafts]
+      operationId: createDraft
+      summary: Create draft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftEnvelope'
+  /api/v1/drafts/{id}:
+    get:
+      tags: [drafts]
+      operationId: getDraft
+      summary: Draft detail with guard/quality/company/contact
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Draft detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [drafts]
+      operationId: updateDraft
+      summary: Update draft
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftEnvelope'
+  /api/v1/drafts/{id}/generate:
+    post:
+      tags: [drafts]
+      operationId: generateDraft
+      summary: Generate draft via server-side agent prompts
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Generated draft
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/drafts/{id}/approve:
+    post:
+      tags: [drafts]
+      operationId: approveDraft
+      summary: Approve draft
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftEnvelope'
+  /api/v1/drafts/{id}/reject:
+    post:
+      tags: [drafts]
+      operationId: rejectDraft
+      summary: Reject draft
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/drafts/{id}/send:
+    post:
+      tags: [drafts]
+      operationId: sendDraft
+      summary: Enqueue draft for sending (passes send-pipeline gates)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Enqueued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/drafts/batch-approve:
+    post:
+      tags: [drafts]
+      operationId: batchApproveDrafts
+      summary: Approve multiple drafts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: Result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/approvals/pending:
+    get:
+      tags: [drafts]
+      operationId: pendingApprovals
+      summary: Pending approvals
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Pending drafts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/inbox/threads:
+    get:
+      tags: [inbox]
+      operationId: listThreads
+      summary: List email threads
+      parameters:
+        - name: unread
+          in: query
+          schema: { type: string, enum: ['1'] }
+        - name: highIntent
+          in: query
+          schema: { type: string, enum: ['1'] }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Threads
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/inbox/high-intent:
+    get:
+      tags: [inbox]
+      operationId: highIntentThreads
+      summary: High intent threads
+      responses:
+        '200':
+          description: Threads
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/inbox/threads/{id}:
+    get:
+      tags: [inbox]
+      operationId: getThread
+      summary: Thread detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Thread detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/inbox/threads/{id}/reply:
+    post:
+      tags: [inbox]
+      operationId: replyThread
+      summary: Send manual reply
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bodyText]
+              properties:
+                bodyText: { type: string }
+      responses:
+        '200':
+          description: Sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/inbox/threads/{id}/read:
+    post:
+      tags: [inbox]
+      operationId: markThreadRead
+      summary: Mark thread as read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Read
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/inbox/threads/{id}/classification:
+    post:
+      tags: [inbox]
+      operationId: correctClassification
+      summary: Correct reply classification
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label:
+                  type: string
+                  enum: [positive_interest, price_inquiry, quote_request, sample_request, technical_question, follow_up_needed, no_need_now, rejection, unsubscribe, auto_reply, unknown]
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/deals:
+    get:
+      tags: [deals]
+      operationId: listDeals
+      summary: List deals
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: stage
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [deals]
+      operationId: createDeal
+      summary: Create deal
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DealInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/deals/pipeline:
+    get:
+      tags: [deals]
+      operationId: dealPipeline
+      summary: Pipeline grouped by stage
+      responses:
+        '200':
+          description: Pipeline (fixed 6 stages including lost; each stage contains items[])
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DealPipelineEnvelope'
+  /api/v1/deals/{id}:
+    get:
+      tags: [deals]
+      operationId: getDeal
+      summary: Deal detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [deals]
+      operationId: updateDeal
+      summary: Update deal
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DealInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    delete:
+      tags: [deals]
+      operationId: deleteDeal
+      summary: Delete deal
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/activities:
+    get:
+      tags: [deals]
+      operationId: listActivities
+      summary: List sales activities
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: companyId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Activities
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [deals]
+      operationId: createActivity
+      summary: Create sales activity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [companyId, type]
+              properties:
+                companyId: { type: string }
+                contactId: { type: string }
+                dealId: { type: string }
+                type: { type: string, enum: [email, call, meeting, note, task, system] }
+                subject: { type: string }
+                body: { type: string }
+                occurredAt: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/follow-up-tasks:
+    get:
+      tags: [deals]
+      operationId: listFollowUpTasks
+      summary: List follow-up tasks
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [deals]
+      operationId: createFollowUpTask
+      summary: Create follow-up task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, dueAt]
+              properties:
+                companyId: { type: string }
+                contactId: { type: string }
+                dueAt: { type: string, format: date-time }
+                type: { type: string, enum: [follow_up, email, call, review, reminder] }
+                title: { type: string }
+                notes: { type: string }
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/follow-up-tasks/{id}:
+    patch:
+      tags: [deals]
+      operationId: updateFollowUpTask
+      summary: Update follow-up task
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    delete:
+      tags: [deals]
+      operationId: deleteFollowUpTask
+      summary: Delete follow-up task
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/automation/states:
+    get:
+      tags: [automation]
+      operationId: listAutomationStates
+      summary: List automation states
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: States
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/automation/{companyId}:
+    get:
+      tags: [automation]
+      operationId: getAutomation
+      summary: Automation detail for a company
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      responses:
+        '200':
+          description: Automation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/automation/{companyId}/takeover:
+    post:
+      tags: [automation]
+      operationId: takeoverCompany
+      summary: Human takeover (atomic state + cancel tasks/jobs + audit)
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Taken over
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+  /api/v1/automation/{companyId}/resume:
+    post:
+      tags: [automation]
+      operationId: resumeAutomation
+      summary: Resume automation (not allowed from DO_NOT_CONTACT)
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      responses:
+        '200':
+          description: Resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/automation/{companyId}/pause:
+    post:
+      tags: [automation]
+      operationId: pauseAutomation
+      summary: Pause automation for a company
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      responses:
+        '200':
+          description: Paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+  /api/v1/automation/{companyId}/do-not-contact:
+    post:
+      tags: [automation]
+      operationId: markDoNotContact
+      summary: Mark company as do-not-contact and add suppression
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+                note: { type: string }
+      responses:
+        '200':
+          description: Marked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+  /api/v1/automation/{companyId}/close:
+    post:
+      tags: [automation]
+      operationId: closeCompany
+      summary: Close company automation
+      parameters:
+        - $ref: '#/components/parameters/CompanyId'
+      responses:
+        '200':
+          description: Closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutomationEnvelope'
+  /api/v1/suppression:
+    get:
+      tags: [suppression]
+      operationId: listSuppression
+      summary: List suppression records
+      parameters:
+        - name: scope
+          in: query
+          schema: { type: string, enum: [email, domain] }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [suppression]
+      operationId: createSuppression
+      summary: Add suppression record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope, value, reason]
+              properties:
+                scope: { type: string, enum: [email, domain] }
+                value: { type: string }
+                reason: { type: string, enum: [unsubscribe, hard_bounce, complaint, manual, do_not_contact, gdpr_request] }
+                note: { type: string }
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/suppression/{id}:
+    delete:
+      tags: [suppression]
+      operationId: deleteSuppression
+      summary: Remove suppression record
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/email-accounts:
+    get:
+      tags: [email-accounts]
+      operationId: listEmailAccounts
+      summary: List email accounts (credentials never returned)
+      responses:
+        '200':
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    post:
+      tags: [email-accounts]
+      operationId: createEmailAccount
+      summary: Create email account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailAccountInput'
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/email-accounts/{id}:
+    get:
+      tags: [email-accounts]
+      operationId: getEmailAccount
+      summary: Email account detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    patch:
+      tags: [email-accounts]
+      operationId: updateEmailAccount
+      summary: Update email account
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailAccountInput'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+    delete:
+      tags: [email-accounts]
+      operationId: deleteEmailAccount
+      summary: Delete email account
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/email-accounts/{id}/test-connection:
+    post:
+      tags: [email-accounts]
+      operationId: testEmailAccount
+      summary: Test SMTP/IMAP connection
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/email-accounts/{id}/sync:
+    post:
+      tags: [email-accounts]
+      operationId: syncEmailAccount
+      summary: Sync inbox now (enqueues email.sync)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/dashboard/summary:
+    get:
+      tags: [dashboard]
+      operationId: dashboardSummary
+      summary: Dashboard summary
+      responses:
+        '200':
+          description: Summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/dashboard/activity:
+    get:
+      tags: [dashboard]
+      operationId: dashboardActivity
+      summary: Recent activity
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 8 }
+      responses:
+        '200':
+          description: Activity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/dashboard/alerts:
+    get:
+      tags: [dashboard]
+      operationId: dashboardAlerts
+      summary: Dashboard alerts
+      responses:
+        '200':
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/agents:
+    get:
+      tags: [agents]
+      operationId: listAgents
+      summary: Agent catalogue and provider status (no prompts, no secrets)
+      responses:
+        '200':
+          description: Catalogue (10 roles) and safe provider status (no prompts, no secrets)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentCatalogueEnvelope'
+  /api/v1/agents/executions:
+    get:
+      tags: [agents]
+      operationId: listAgentExecutions
+      summary: List agent executions
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: role
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [queued, running, succeeded, failed, cancelled] }
+      responses:
+        '200':
+          description: Executions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/agents/executions/{id}:
+    get:
+      tags: [agents]
+      operationId: getAgentExecution
+      summary: Agent execution detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Execution
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/agents/test-provider:
+    post:
+      tags: [agents]
+      operationId: testProvider
+      summary: Test configured AI provider
+      responses:
+        '200':
+          description: Test result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/agents/run:
+    post:
+      tags: [agents]
+      operationId: runAgent
+      summary: Run an agent role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [orchestrator, market_research, company_qualification, contact_research, product_matching, outreach_writer, reply_classification, follow_up_planning, compliance_guard, quality_review]
+                input: { type: object }
+      responses:
+        '200':
+          description: Agent result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+  /api/v1/jobs:
+    get:
+      tags: [jobs]
+      operationId: listJobs
+      summary: List background jobs
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [queued, running, succeeded, failed, cancelled, dead] }
+        - name: type
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/jobs/stats:
+    get:
+      tags: [jobs]
+      operationId: jobStats
+      summary: Job statistics
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/jobs/pause:
+    post:
+      tags: [jobs]
+      operationId: pauseJobs
+      summary: Pause all jobs for this workspace
+      responses:
+        '200':
+          description: Paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/jobs/resume:
+    post:
+      tags: [jobs]
+      operationId: resumeJobs
+      summary: Resume all jobs for this workspace
+      responses:
+        '200':
+          description: Resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/jobs/{id}:
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: Job detail
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/jobs/{id}/cancel:
+    post:
+      tags: [jobs]
+      operationId: cancelJob
+      summary: Cancel job
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/jobs/{id}/retry:
+    post:
+      tags: [jobs]
+      operationId: retryJob
+      summary: Retry failed/cancelled/dead job
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Retried
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/public/meta:
+    get:
+      tags: [public]
+      operationId: publicMeta
+      security: []
+      summary: Public brand metadata
+      responses:
+        '200':
+          description: Meta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/public/unsubscribe/{token}:
+    get:
+      tags: [public]
+      operationId: previewUnsubscribe
+      security: []
+      summary: Preview unsubscribe link
+      parameters:
+        - $ref: '#/components/parameters/Token'
+      responses:
+        '200':
+          description: Preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+    post:
+      tags: [public]
+      operationId: unsubscribe
+      security: []
+      summary: Execute unsubscribe (idempotent)
+      parameters:
+        - $ref: '#/components/parameters/Token'
+      responses:
+        '200':
+          description: Unsubscribed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: zr_session
+      description: Session cookie (HttpOnly). Mutating requests also require X-CSRF-Token.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API key with `zrk_` prefix
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    CompanyId:
+      name: companyId
+      in: path
+      required: true
+      schema: { type: string }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string }
+    Token:
+      name: token
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Not authenticated
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Missing capability or CSRF failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Not found (or cross-workspace)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: State conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ValidationError:
+      description: Validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    PayloadTooLarge:
+      description: Payload too large
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    TooManyRequests:
+      description: Rate limited
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ApiEnvelope:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean, example: true }
+        data: { type: object, nullable: true }
+    ErrorEnvelope:
+      type: object
+      required: [ok, error]
+      properties:
+        ok: { type: boolean, example: false }
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: VALIDATION_ERROR }
+            message: { type: string, example: 企业名称不能为空 }
+            details: { type: object, nullable: true }
+    Pagination:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        pageSize: { type: integer }
+        hasMore: { type: boolean }
+    OutreachSettings:
+      type: object
+      properties:
+        requireApproval: { type: boolean, default: true }
+        autoSendEnabled: { type: boolean, default: false }
+        dailySendLimit: { type: integer, default: 50 }
+        sendWindow:
+          type: object
+          properties:
+            start: { type: integer, default: 9 }
+            end: { type: integer, default: 17 }
+            weekdays:
+              type: array
+              items: { type: integer }
+            timezone: { type: string, default: Europe/Berlin }
+        signature: { type: string }
+        defaultLanguage: { type: string, default: en }
+    CompanyInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 200 }
+        domain: { type: string }
+        website: { type: string, format: uri }
+        country: { type: string, maxLength: 2 }
+        region: { type: string }
+        city: { type: string }
+        address: { type: string }
+        companyType: { type: string }
+        industry: { type: string }
+        employeeRange: { type: string }
+        revenueRange: { type: string }
+        description: { type: string, maxLength: 4000 }
+        linkedinUrl: { type: string }
+        phone: { type: string }
+        status:
+          type: string
+          enum: [new, qualified, contacted, replied, customer, disqualified, archived]
+        confidence:
+          type: string
+          enum: [unverified, low, medium, high]
+        tags:
+          type: array
+          maxItems: 30
+          items: { type: string }
+        icpId: { type: string, nullable: true }
+        ownerUserId: { type: string, nullable: true }
+        source: { type: object }
+    Company:
+      type: object
+      properties:
+        id: { type: string, example: cmp_01JABCDEFG }
+        workspaceId: { type: string }
+        name: { type: string }
+        normalizedName: { type: string }
+        domain: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        country: { type: string, nullable: true }
+        companyType: { type: string, nullable: true }
+        industry: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [new, qualified, contacted, replied, customer, disqualified, archived]
+        tags:
+          type: array
+          items: { type: string }
+        confidence:
+          type: string
+          enum: [unverified, low, medium, high]
+        dataQualityScore: { type: integer }
+        contactsCount: { type: integer }
+        score: { type: integer, nullable: true }
+        automationState: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CompanyListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: '#/components/schemas/Pagination'
+                - type: object
+                  properties:
+                    items:
+                      type: array
+                      items: { $ref: '#/components/schemas/Company' }
+    CompanyEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Company' }
+    ContactInput:
+      type: object
+      required: [companyId]
+      properties:
+        companyId: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        fullName: { type: string }
+        title: { type: string }
+        roleCategory:
+          type: string
+          enum: [decision_maker, influencer, gatekeeper, technical, unknown]
+        email: { type: string, format: email }
+        emailType:
+          type: string
+          enum: [business, personal, role, inferred, unknown]
+        emailStatus:
+          type: string
+          enum: [unverified, valid, risky, invalid, inferred]
+        phone: { type: string }
+        linkedinUrl: { type: string }
+        country: { type: string, maxLength: 2 }
+        language: { type: string }
+        department: { type: string }
+        isPrimary: { type: boolean }
+        confidence:
+          type: string
+          enum: [unverified, low, medium, high]
+        inferred: { type: boolean }
+        source: { type: object }
+    Contact:
+      type: object
+      properties:
+        id: { type: string, example: ctc_01JABCDEFG }
+        companyId: { type: string }
+        fullName: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        roleCategory: { type: string }
+        email: { type: string, nullable: true }
+        emailType: { type: string }
+        emailStatus: { type: string }
+        isPrimary: { type: boolean }
+        confidence: { type: string }
+        companyName: { type: string }
+        companyDomain: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    ContactListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: '#/components/schemas/Pagination'
+                - type: object
+                  properties:
+                    items:
+                      type: array
+                      items: { $ref: '#/components/schemas/Contact' }
+    ContactEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Contact' }
+    ProductInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 200 }
+        category: { type: string }
+        sku: { type: string }
+        description: { type: string, maxLength: 4000 }
+        specs: { type: object }
+        applications:
+          type: array
+          items: { type: string }
+        materials: { type: string }
+        certifications:
+          type: array
+          items: { type: string }
+        capacity: { type: string }
+        moq: { type: string }
+        pricingTerms: { type: string }
+        samples: { type: string }
+        leadTime: { type: string }
+        status: { type: string, enum: [active, draft, archived] }
+    IcpInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 200 }
+        description: { type: string, maxLength: 4000 }
+        productId: { type: string, nullable: true }
+        targetCountries:
+          type: array
+          items: { type: string, maxLength: 2 }
+        targetRegions:
+          type: array
+          items: { type: string }
+        targetCompanyTypes:
+          type: array
+          items: { type: string }
+        targetSizes:
+          type: array
+          items: { type: string }
+        targetRoles:
+          type: array
+          items: { type: string }
+        includeKeywords:
+          type: array
+          items: { type: string }
+        excludeKeywords:
+          type: array
+          items: { type: string }
+        minScore: { type: integer, minimum: 0, maximum: 100, default: 60 }
+        isActive: { type: boolean, default: true }
+    ScoreEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                companyId: { type: string }
+                productId: { type: string }
+                score: { type: integer, minimum: 0, maximum: 100 }
+                grade: { type: string, enum: [A, B, C, D] }
+                factors:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      label: { type: string }
+                      weight: { type: number }
+                      score: { type: number }
+                      reason: { type: string }
+                      evidence:
+                        type: array
+                        items: { type: object }
+                exclusions:
+                  type: array
+                  items: { type: object }
+                explanation: { type: string }
+                modelVersion: { type: string, example: rules-v1 }
+                scoredAt: { type: string, format: date-time }
+    CampaignInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        productId: { type: string, nullable: true }
+        icpId: { type: string, nullable: true }
+        goal: { type: string }
+        status: { type: string, enum: [draft, active, paused, archived] }
+        dailyLimit: { type: integer, default: 30 }
+        requireApproval: { type: boolean, default: true }
+    CampaignEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                id: { type: string, example: cmp_01JABCDEFG }
+                name: { type: string }
+                status: { type: string, enum: [draft, active, paused, archived] }
+                dailyLimit: { type: integer }
+                requireApproval: { type: boolean }
+                targetCount: { type: integer }
+                sentCount: { type: integer }
+                stepCount: { type: integer }
+                repliedCount: { type: integer }
+                pendingApprovalCount: { type: integer }
+                productName: { type: string, nullable: true }
+                icpName: { type: string, nullable: true }
+                createdAt: { type: string, format: date-time }
+    Campaign:
+      type: object
+      properties:
+        id: { type: string, example: cmp_01JABCDEFG }
+        workspaceId: { type: string }
+        name: { type: string }
+        productId: { type: string, nullable: true }
+        productName: { type: string, nullable: true }
+        icpId: { type: string, nullable: true }
+        icpName: { type: string, nullable: true }
+        goal: { type: string, nullable: true }
+        status: { type: string, enum: [draft, active, paused, archived] }
+        dailyLimit: { type: integer }
+        requireApproval: { type: boolean }
+        sendWindow: { type: object }
+        targetCount: { type: integer }
+        sentCount: { type: integer }
+        stepCount: { type: integer }
+        repliedCount: { type: integer }
+        pendingApprovalCount: { type: integer }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CampaignListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: '#/components/schemas/Pagination'
+                - type: object
+                  properties:
+                    items:
+                      type: array
+                      items: { $ref: '#/components/schemas/Campaign' }
+    PipelineDeal:
+      type: object
+      properties:
+        id: { type: string }
+        title: { type: string }
+        companyId: { type: string }
+        companyName: { type: string }
+        contactId: { type: string, nullable: true }
+        contactName: { type: string, nullable: true }
+        valueAmount: { type: number, nullable: true }
+        currency: { type: string, example: EUR }
+        probability: { type: integer, nullable: true }
+        expectedCloseDate: { type: string, format: date-time, nullable: true }
+        ownerUserId: { type: string, nullable: true }
+        updatedAt: { type: string, format: date-time }
+    PipelineStage:
+      type: object
+      properties:
+        stage: { type: string, enum: [lead, qualified, proposal, negotiation, won, lost] }
+        label: { type: string }
+        count: { type: integer }
+        totalValue: { type: number }
+        weightedValue: { type: number }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PipelineDeal' }
+    DealPipelineEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                stages:
+                  type: array
+                  description: Fixed order lead, qualified, proposal, negotiation, won, lost
+                  items: { $ref: '#/components/schemas/PipelineStage' }
+                totals:
+                  type: object
+                  properties:
+                    openCount: { type: integer }
+                    totalValue: { type: number }
+                    weightedValue: { type: number }
+                    wonValue: { type: number }
+                currency: { type: string, example: EUR }
+    SessionEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                initialized: { type: boolean }
+                user:
+                  type: object
+                  nullable: true
+                  properties:
+                    id: { type: string }
+                    email: { type: string }
+                    name: { type: string }
+                    locale: { type: string }
+                    mustChangePassword: { type: boolean }
+                workspace:
+                  type: object
+                  nullable: true
+                  properties:
+                    id: { type: string }
+                    name: { type: string }
+                    slug: { type: string }
+                    status: { type: string }
+                membership:
+                  type: object
+                  nullable: true
+                  properties:
+                    role: { type: string, enum: [owner, admin, member, viewer] }
+                    roleLabel: { type: string }
+                    capabilities:
+                      type: array
+                      items: { type: string }
+                csrfToken: { type: string, nullable: true }
+                authType: { type: string, nullable: true }
+    AgentCatalogueEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role: { type: string }
+                      name: { type: string }
+                      nameZh: { type: string }
+                      description: { type: string }
+                      promptVersion: { type: string }
+                      capabilities:
+                        type: array
+                        items: { type: string }
+                      inputFields:
+                        type: array
+                        items: { type: string }
+                provider:
+                  type: object
+                  properties:
+                    provider: { type: string, example: simulation }
+                    model: { type: string, nullable: true }
+                    isSimulation: { type: boolean }
+                    source: { type: string }
+                    configured: { type: boolean }
+                    baseUrlHost: { type: string, nullable: true }
+                    timeoutMs: { type: integer, nullable: true }
+                    pricing: { type: object, nullable: true }
+                    warning: { type: string, nullable: true }
+                roles:
+                  type: array
+                  items: { type: string }
+                limits:
+                  type: object
+                  properties:
+                    maxInputBytes: { type: integer }
+    CampaignStepInput:
+      type: object
+      required: [name]
+      properties:
+        stepNo: { type: integer }
+        name: { type: string }
+        subjectTemplate: { type: string }
+        bodyTemplate: { type: string }
+        language: { type: string, default: en }
+        delayDays: { type: integer, default: 0 }
+        isActive: { type: boolean }
+    DraftInput:
+      type: object
+      required: [companyId, contactId]
+      properties:
+        companyId: { type: string }
+        contactId: { type: string }
+        campaignId: { type: string, nullable: true }
+        campaignStepId: { type: string, nullable: true }
+        accountId: { type: string, nullable: true }
+        subject: { type: string }
+        bodyText: { type: string }
+        language: { type: string, default: en }
+        scheduledAt: { type: string, format: date-time, nullable: true }
+    Draft:
+      type: object
+      properties:
+        id: { type: string, example: drf_01JABCDEFG }
+        companyId: { type: string }
+        contactId: { type: string }
+        campaignId: { type: string, nullable: true }
+        subject: { type: string }
+        bodyText: { type: string }
+        language: { type: string }
+        status:
+          type: string
+          enum: [draft, pending_approval, approved, rejected, scheduled, sent, failed, discarded]
+        quality: { type: object }
+        guard: { type: object }
+        approvedBy: { type: string, nullable: true }
+        approvedAt: { type: string, format: date-time, nullable: true }
+        sentMessageId: { type: string, nullable: true }
+        companyName: { type: string }
+        contactName: { type: string }
+        contactEmail: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    DraftListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              allOf:
+                - $ref: '#/components/schemas/Pagination'
+                - type: object
+                  properties:
+                    items:
+                      type: array
+                      items: { $ref: '#/components/schemas/Draft' }
+    DraftEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data: { $ref: '#/components/schemas/Draft' }
+    DealInput:
+      type: object
+      required: [companyId, title]
+      properties:
+        companyId: { type: string }
+        contactId: { type: string, nullable: true }
+        productId: { type: string, nullable: true }
+        title: { type: string }
+        stage: { type: string, enum: [lead, qualified, proposal, negotiation, won, lost] }
+        valueAmount: { type: number, nullable: true }
+        currency: { type: string, default: EUR }
+        probability: { type: integer, nullable: true }
+        expectedCloseDate: { type: string, format: date, nullable: true }
+        status: { type: string, enum: [open, won, lost] }
+        lostReason: { type: string }
+    EmailAccountInput:
+      type: object
+      required: [name, address]
+      properties:
+        name: { type: string }
+        address: { type: string, format: email }
+        displayName: { type: string }
+        protocol: { type: string, enum: [smtp_imap, simulation] }
+        smtpHost: { type: string }
+        smtpPort: { type: integer }
+        smtpSecure: { type: boolean }
+        imapHost: { type: string }
+        imapPort: { type: integer }
+        imapSecure: { type: boolean }
+        username: { type: string }
+        password: { type: string, description: Encrypted at rest; never returned }
+        signature: { type: string }
+        dailyLimit: { type: integer, default: 50 }
+    AutomationEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                company:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    name: { type: string }
+                state:
+                  type: string
+                  enum: [AUTOMATION_ACTIVE, NEEDS_HUMAN_REVIEW, HUMAN_TAKEOVER, PAUSED, DO_NOT_CONTACT, CLOSED]
+                reason: { type: string, nullable: true }
+                changedAt: { type: string, format: date-time }
+                canSend: { type: boolean }
+                canAutoSend: { type: boolean }
+                suppressed: { type: boolean }
+                cancelledTasks: { type: integer }
+                cancelledJobs: { type: integer }

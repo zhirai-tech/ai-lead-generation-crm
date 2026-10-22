@@ -1,0 +1,14 @@
+{
+  "name": "ZHIRAI Europe B2B AI Outreach Platform",
+  "short_name": "ZHIRAI Outreach",
+  "description": "智睿欧洲 B2B AI 外贸获客平台",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#05070d",
+  "theme_color": "#05070d",
+  "icons": [
+    { "src": "/assets/brand/app-icons/128x128.png", "sizes": "128x128", "type": "image/png" },
+    { "src": "/assets/brand/app-icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

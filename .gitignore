@@ -1,0 +1,22 @@
+# Runtime data (database, uploads, logs, generated secrets)
+server/data/
+data/
+
+# Environment & secrets
+.env
+.env.local
+*.key
+
+# Dependencies (this project intentionally has zero runtime npm dependencies)
+node_modules/
+
+# Test / verification artifacts
+.verify/
+coverage/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
