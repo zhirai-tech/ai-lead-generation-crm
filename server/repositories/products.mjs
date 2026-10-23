@@ -37,6 +37,8 @@ export function mapProduct(row) {
     samples: row.samples || null,
     leadTime: row.lead_time || null,
     status: row.status,
+    keywords: jsonArray(row.keywords_json),
+    mainImageFileId: row.main_image_file_id || null,
     createdBy: row.created_by || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -92,8 +94,8 @@ export function listActiveProducts(workspaceId, { limit = 500 } = {}) {
 
 const INSERT_COLUMNS = [
   'id', 'workspace_id', 'name', 'category', 'sku', 'description', 'specs_json', 'applications_json', 'materials',
-  'certifications_json', 'capacity', 'moq', 'pricing_terms', 'samples', 'lead_time', 'status', 'created_by',
-  'created_at', 'updated_at',
+  'certifications_json', 'capacity', 'moq', 'pricing_terms', 'samples', 'lead_time', 'status', 'keywords_json',
+  'main_image_file_id', 'created_by', 'created_at', 'updated_at',
 ];
 
 export function insertProduct(data) {
@@ -106,7 +108,8 @@ export function insertProduct(data) {
 
 const UPDATE_COLUMNS = new Set([
   'name', 'category', 'sku', 'description', 'specs_json', 'applications_json', 'materials', 'certifications_json',
-  'capacity', 'moq', 'pricing_terms', 'samples', 'lead_time', 'status', 'updated_at',
+  'capacity', 'moq', 'pricing_terms', 'samples', 'lead_time', 'status', 'keywords_json', 'main_image_file_id',
+  'updated_at',
 ]);
 
 export function updateProduct(workspaceId, productId, patch) {
@@ -131,3 +134,89 @@ export function softDeleteProduct(workspaceId, productId) {
     ]).changes > 0
   );
 }
+
+// ------------------------------------------------------------ product files
+export function mapProductFile(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    productId: row.product_id,
+    filename: row.filename,
+    mimeType: row.mime_type || 'application/octet-stream',
+    sizeBytes: row.size_bytes,
+    storagePath: row.storage_path,
+    kind: row.kind === 'image' ? 'image' : 'document',
+    uploadedBy: row.uploaded_by || null,
+    createdAt: row.created_at,
+  };
+}
+
+/** Files for many products in one query (list endpoints must stay N+1 free). */
+export function listFilesForProducts(workspaceId, productIds = []) {
+  if (!productIds.length) return [];
+  const placeholders = productIds.map(() => '?').join(',');
+  return all(
+    `SELECT * FROM product_files WHERE workspace_id = ? AND product_id IN (${placeholders})
+      ORDER BY created_at ASC, id ASC`,
+    [workspaceId, ...productIds],
+  ).map(mapProductFile);
+}
+
+export function listFilesForProduct(workspaceId, productId) {
+  return listFilesForProducts(workspaceId, [productId]);
+}
+
+export function findProductFile(workspaceId, productId, fileId) {
+  return mapProductFile(
+    get('SELECT * FROM product_files WHERE id = ? AND workspace_id = ? AND product_id = ?', [fileId, workspaceId, productId]),
+  );
+}
+
+export function findProductFileForWorkspace(workspaceId, fileId) {
+  return mapProductFile(get('SELECT * FROM product_files WHERE id = ? AND workspace_id = ?', [fileId, workspaceId]));
+}
+
+export function countProductFiles(workspaceId, productId) {
+  return get('SELECT COUNT(*) AS c FROM product_files WHERE workspace_id = ? AND product_id = ?', [workspaceId, productId])?.c ?? 0;
+}
+
+export function insertProductFile(data) {
+  run(
+    `INSERT INTO product_files (id, workspace_id, product_id, filename, mime_type, size_bytes, storage_path, kind, uploaded_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.id,
+      data.workspace_id,
+      data.product_id,
+      data.filename,
+      data.mime_type,
+      data.size_bytes,
+      data.storage_path,
+      data.kind || 'document',
+      data.uploaded_by || null,
+      data.created_at,
+    ],
+  );
+  return findProductFile(data.workspace_id, data.product_id, data.id);
+}
+
+export function deleteProductFileRow(workspaceId, productId, fileId) {
+  return run('DELETE FROM product_files WHERE id = ? AND workspace_id = ? AND product_id = ?', [fileId, workspaceId, productId]).changes > 0;
+}
+
+/** Set (or clear when fileId is null) the product main image. */
+export function setProductMainImage(workspaceId, productId, fileId) {
+  run('UPDATE products SET main_image_file_id = ?, updated_at = ? WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL', [
+    fileId || null,
+    new Date().toISOString(),
+    productId,
+    workspaceId,
+  ]);
+  return findProduct(workspaceId, productId);
+}
+
+export function getProductMainImageFileId(workspaceId, productId) {
+  return get('SELECT main_image_file_id FROM products WHERE id = ? AND workspace_id = ?', [productId, workspaceId])?.main_image_file_id || null;
+}
+

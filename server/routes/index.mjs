@@ -15,6 +15,7 @@ import { mount as dashboard } from './dashboard.mjs';
 import { mount as companies } from './companies.mjs';
 import { mount as contacts } from './contacts.mjs';
 import { mount as products } from './products.mjs';
+import { mount as productFiles } from './product-files.mjs';
 import { mount as icps } from './icps.mjs';
 import { mount as discovery } from './discovery.mjs';
 import { mount as imports } from './imports.mjs';
@@ -42,6 +43,7 @@ export function mountRoutes(router) {
   companies(router);
   contacts(router);
   products(router);
+  productFiles(router);
   icps(router);
   discovery(router);
   imports(router);

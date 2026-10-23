@@ -1,9 +1,9 @@
 # 系统架构研究方案（Architecture）
 
-> 项目：ZHIRAI Europe B2B AI Outreach Platform（智睿欧洲 B2B AI 外贸获客平台）v1.0.0
+> 项目：ZHIRAI Europe B2B AI Outreach Platform（智睿欧洲 B2B AI 外贸获客平台）v1.1.0
 > 作者：ZHIRAI · 智睿科技 · 独立开发者
 > 对应方案文件第八节「系统架构设计交付要求」19 项。
-> 事实纪律：本文标注 **已实现** / **部分实现** / **未实现** / **未验证**。代码状态以 `C:\zhirai-stage\platform` 实际文件与验收结果为准（2026-10-22 最终复核）。
+> 事实纪律：本文标注 **已实现** / **部分实现** / **未实现** / **未验证**。代码状态以 `C:\zhirai-stage\platform` 实际文件与验收结果为准（2026-10-23 复核，含 v1.1 产品媒体/附件/关键词）。
 
 ---
 
@@ -57,10 +57,10 @@
 
 ### 1.2 不是什么（边界声明）
 
-- 不是邮件群发器：v1.0 默认每条外发邮件都需人工审批（`settings.outreach.requireApproval = true`、`autoSendEnabled = false`）。
+- 不是邮件群发器：默认每条外发邮件都需人工审批（`settings.outreach.requireApproval = true`、`autoSendEnabled = false`）。
 - 不是通用 CRM：CRM 只是获客闭环的承载层，不做工单、财务、进销存。
 - 不是开源拼装包：0 第三方运行时依赖，0 参考项目代码（见 [RESEARCH.md](./RESEARCH.md)、[LICENSE-REGISTER.md](./LICENSE-REGISTER.md)）。
-- 不是 LinkedIn/WhatsApp 自动化工具：v1.0 不实现此类通道（合规与平台 ToS 风险高），见 [ROADMAP.md](./ROADMAP.md)。
+- 不是 LinkedIn/WhatsApp 自动化工具：不实现此类通道（合规与平台 ToS 风险高），见 [ROADMAP.md](./ROADMAP.md)。
 
 ### 1.3 目标用户
 
@@ -89,8 +89,9 @@
 | 语言 | JavaScript ESM（`.mjs`） | 全仓 `"type": "module"` |
 | HTTP | 自写微型框架 `server/core/http.mjs` | 路由/CSRF/限流/静态文件/JSON 错误 |
 | 数据库 | SQLite（WAL） | `node:sqlite` 的 `DatabaseSync`，单文件 `server/data/outreach.sqlite` |
-| 迁移 | 编号 `.sql` + `schema_migrations` 表 | `server/db/migrations/001_init.sql` |
+| 迁移 | 编号 `.sql` + `schema_migrations` 表 | `001_init.sql`、`002_product_media_attachments.sql` |
 | 队列 | 数据库任务表 + 进程内 Worker | `background_jobs` |
+| 文件存储 | 本地 `uploads/` + SQLite 元数据 | 产品图片/PDF：`uploads/products/<workspace>/<product>/<fileId>.<ext>`；DB 存相对路径 |
 | 前端 | 原生 HTML/CSS/ES Modules | 无构建步骤，`index.html` + `src/**` |
 | Agent | 自写 Provider 抽象（OpenAI 兼容 + 模拟） | `server/agents/**` |
 | 邮件 | 自写 SMTP/IMAP 客户端 + MIME 构建 | `server/mail/**`（Node 内置 `net`/`tls`） |
@@ -320,16 +321,16 @@ flowchart LR
 | `server/core/ids.mjs` | 前缀 ULID（`cmp_…`） | — | `node:crypto` | ✅ |
 | `server/core/secrets.mjs` | 进程级主密钥（`secret.key`） | — | crypto | ✅ |
 | `server/core/logger.mjs` | 结构化日志（自动脱敏）、`logs/app.log` | 不记录明文密钥 | `node:fs` | ✅ |
-| `server/db/migrations/001_init.sql` | 40 张表、索引、唯一约束 | — | — | ✅ |
+| `server/db/migrations/001_init.sql`、`002_product_media_attachments.sql` | 40 张业务表、索引、唯一约束；v1.1 以 `ADD COLUMN` 增加关键词/主图/文件类别/附件快照 | — | — | ✅ |
 | `server/repositories/*.mjs` | 纯 SQL + 行映射，**每条查询带 `workspace_id`** | 不做业务规则、不发通知 | core/db | ✅ |
-| `server/services/*.mjs` | 业务规则、事务、审计、通知、入队 | 不解析 HTTP | repositories/core | ✅ |
-| `server/routes/*.mjs` | 输入校验 → 调 service → 返回；声明 `auth/capability/rateLimit` | 不写 SQL | services/core | ✅（25 个路由模块 / 154 条路由） |
-| `server/agents/**` | Provider 抽象、服务端提示词、10 角色、结构化输出校验、执行记录 | 不直接改业务表 | core、services | ✅ |
-| `server/jobs/**` | 队列（幂等/租约/重试/取消）、Worker、调度、发送管线 | 不绕过 service | repositories、mail、agents | ✅ |
-| `server/mail/**` | SMTP 客户端、MIME 构建、IMAP 同步、模拟邮箱 | 不做业务判断 | `node:net`/`node:tls` | ✅ |
-| `src/**` | 原生前端页面与组件 | 不持有密钥/提示词 | HTTP API | ✅（15 个页面模块 / 16 条路由，真实浏览器验收通过） |
+| `server/services/*.mjs` | 业务规则、事务、审计、通知、入队；含 `product-files.mjs`（上传/下载/公开链接） | 不解析 HTTP | repositories/core | ✅ |
+| `server/routes/*.mjs` | 输入校验 → 调 service → 返回；声明 `auth/capability/rateLimit` | 不写 SQL | services/core | ✅（26 个路由模块 / 161 条路由） |
+| `server/agents/**` | Provider 抽象、服务端提示词、11 角色（含 `keyword_research`）、结构化输出校验、执行记录 | 不直接改业务表 | core、services | ✅ |
+| `server/jobs/**` | 队列（幂等/租约/重试/取消）、Worker、调度、发送管线（含附件装配） | 不绕过 service | repositories、mail、agents | ✅ |
+| `server/mail/**` | SMTP 客户端、MIME 构建（`multipart/mixed` 附件）、IMAP 同步、模拟邮箱 | 不做业务判断 | `node:net`/`node:tls` | ✅ |
+| `src/**` | 原生前端页面与组件（产品媒体/关键词、发现国家快捷选择、草稿附件展示） | 不持有密钥/提示词 | HTTP API | ✅（15 个页面模块 / 16 条路由，真实浏览器验收通过） |
 | `scripts/*.mjs` | `init-db` / `seed-demo` / `reset-password` / `backup` / `verify-safety` | 不承载业务 | core | ✅（均已随发行包提供） |
-| `tests/**` | `node:test`；临时库 + 随机端口 | 不碰 4173 / `server/data` | helpers | ✅（274 项测试：273 通过 / 1 跳过 / 0 失败） |
+| `tests/**` | `node:test`；临时库 + 随机端口 | 不碰 4173 / `server/data` | helpers | ✅（309 项测试：308 通过 / 1 跳过 / 0 失败） |
 
 > 状态说明：✅ = 已实现并有测试/验收覆盖；🟡 = 部分实现（见 §11 与 §18 的边界说明）；⚪ = 未实现。详见附录 A / 附录 B。
 
@@ -341,7 +342,7 @@ flowchart LR
 
 ## 6. Agent 职责与调用关系（交付项 5）
 
-### 6.1 10 个逻辑角色
+### 6.1 11 个逻辑角色
 
 | # | 角色（role） | 中文名 | 输入 | 输出（结构化） | 关键约束 |
 | --- | --- | --- | --- | --- | --- |
@@ -350,13 +351,14 @@ flowchart LR
 | 3 | `company_qualification` | 企业资格评估 | 企业公开信息 + ICP | 匹配分项、排除原因、置信度 | 区分事实/推断/未知 |
 | 4 | `contact_research` | 联系人研究 | 企业 + 目标角色 | 姓名、职位、角色类别、邮箱类型 | 推测邮箱不得标 valid |
 | 5 | `product_matching` | 产品匹配 | 产品资料 + 企业业务 | 匹配理由、适用场景 | 只能用产品库事实 |
-| 6 | `outreach_writer` | 开发信撰写 | 企业/联系人/产品/语言 | 主题、正文、变量占位 | 不得虚构认证/产能/价格/案例 |
+| 6 | `outreach_writer` | 开发信撰写 | 企业/联系人/产品/语言/**productFiles（v2 新增）** | 主题、正文、变量占位、正文 PDF 链接 | 不得虚构认证/产能/价格/案例；只能引用给定 `publicUrl` |
 | 7 | `reply_classification` | 回复分类 | 原始邮件 | 11 类标签、置信度、依据、建议回复 | 不得因一个正面词判定成交 |
 | 8 | `follow_up_planning` | 跟进规划 | 线程历史 + 分类 | 下一步动作、时间、话术要点 | 尊重接管/退订状态 |
 | 9 | `compliance_guard` | 合规守卫 | 草稿 + 抑制/接管状态 | 通过/拦截 + 理由 | 一票否决 |
 | 10 | `quality_review` | 质量审查 | 草稿 + 事实清单 | 问题列表、评分、修改建议 | 不得放过无依据陈述 |
+| 11 | `keyword_research` | 关键词研究 | 产品（名称/分类/规格/应用/材料/现有词） | `keywords` / `negativeKeywords` / `searchQueries` / `notes` | 只能基于已填字段扩展；不编造认证/客户；最多 30 词 |
 
-> 角色清单来自方案 §6；`AGENT_CATALOG` 由 `server/agents/index.mjs` 导出（✅ 已实现）。**角色是逻辑职责，不是独立进程**。
+> 角色清单来自方案 §6 + v1.1 新增；`AGENT_CATALOG` 由 `server/agents/index.mjs` 导出（✅ 已实现）。**角色是逻辑职责，不是独立进程**。提示词版本：`outreach_writer@2`（支持 `productFiles[].publicUrl`），其余为 `@1`。
 
 ### 6.2 调用关系图
 
@@ -383,19 +385,20 @@ flowchart TB
         R2["company_qualification"]
         R3["contact_research"]
         R4["product_matching"]
-        R5["outreach_writer"]
+        R5["outreach_writer (v2)"]
         R6["reply_classification"]
         R7["follow_up_planning"]
         R8["compliance_guard"]
         R9["quality_review"]
+        R10["keyword_research"]
     end
 
     U --> ORCH
     J --> ORCH
     ORCH --> REG
     CAT --> REG
-    REG --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9
-    R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 --> PRM
+    REG --> R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10
+    R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 --> PRM
     PRM --> PROV
     PROV --> VAL
     VAL --> EXEC
@@ -408,9 +411,10 @@ flowchart TB
 1. **统一入口**：所有角色只能通过 `runAgent({ workspaceId, role, input, actorType, actorId, jobId })` 执行；返回 `{ executionId, output, usage }`。
 2. **结构化输出**：每个角色有输出 JSON Schema；解析失败重试 1 次，仍失败则抛错并写 `agent_executions.status='failed'` + `error`。
 3. **可追溯**：每次执行写 `agent_executions`（输入/输出/模型/token/耗时/成本）与 `usage_records`（`ai_tokens`/`agent_run`）。草稿通过 `message_drafts.generated_by` 指回执行记录。
-4. **事实约束**：`outreach_writer`、`product_matching`、`quality_review` 的提示词明确"只能引用输入中出现的产品事实"；草稿保存 `guard_json`（合规检查结果）与 `quality_json`（质量检查结果）。
-5. **不可越权**：Agent 不持有数据库句柄、不能直接执行 SQL；所有写操作回到 service 层并记审计。
+4. **事实约束**：`outreach_writer`、`product_matching`、`quality_review`、`keyword_research` 的提示词明确"只能引用输入中出现的事实"；草稿保存 `guard_json`（合规检查结果）与 `quality_json`（质量检查结果）。
+5. **不可越权**：Agent 不持有数据库句柄、不能直接执行 SQL/HTTP；所有写操作回到 service 层并记审计。
 6. **可切换**：`Provider` 由工作空间设置决定（`settings.ai.provider`），无密钥时自动回落内置 `simulation`（确定性输出，便于离线演示与测试）。
+7. **关键词生成**（v1.1）：`POST /products/:id/generate-keywords` 同步调用 `keyword_research`；输出经 Schema 校验后写入 `products.keywords_json`；Provider 不可用返回 503，不伪造关键词。
 
 ---
 
@@ -510,7 +514,8 @@ sequenceDiagram
 ## 8. 数据库实体关系（交付项 7）
 
 - 完整 ER 图、字段说明、唯一约束、索引、保留与迁移策略见 **[DATA-MODEL.md](./DATA-MODEL.md)**。
-- 概览：**40 张表**，全部业务表带 `workspace_id`；租户隔离在仓储层 SQL 强制。
+- 概览：**40 张业务表**（连迁移表 `schema_migrations` 共 41 个表），全部业务表带 `workspace_id`；租户隔离在仓储层 SQL 强制。
+- v1.1 新增字段（`002` 迁移，`ALTER TABLE ADD COLUMN`）：`products.keywords_json/main_image_file_id`、`product_files.kind`、`message_drafts.attachments_json`、`email_messages.attachments_json`。业务表数量未变。
 - 核心关系（简图）：
 
 ```mermaid
@@ -520,6 +525,8 @@ erDiagram
     WORKSPACES ||--o{ PRODUCTS : owns
     WORKSPACES ||--o{ ICPS : owns
     PRODUCTS ||--o{ ICPS : targets
+    PRODUCTS ||--o{ PRODUCT_FILES : has
+    PRODUCTS ||--o| PRODUCT_FILES : main_image
     WORKSPACES ||--o{ COMPANIES : owns
     COMPANIES ||--o{ COMPANY_SOURCES : from
     COMPANIES ||--o{ CONTACTS : has
@@ -619,6 +626,17 @@ flowchart LR
 - 读取：仅 `services/settings.mjs#getCredential()` 在服务端解密；任何 API 响应只返回 `hasSecret` 与掩码预览。
 - 轮换：删除后重新保存即可；`secret.key` 丢失则所有密文不可解（需重新录入），见 [DEPLOY.md](../DEPLOY.md) 备份说明。
 
+### 9.4 产品媒体与公开文件链接（v1.1，非"外部服务"但属于外部可达面）
+
+| 项 | 设计 |
+| --- | --- |
+| 存储 | 本地 `DATA_DIR/uploads/products/<workspaceId>/<productId>/<fileId>.<ext>`；DB 存元数据 + 相对路径 |
+| 上传 | `POST /products/:id/files`（base64 JSON，≤8 MB，MIME 白名单 PNG/JPEG/WebP/PDF） |
+| 认证下载 | `GET /products/:id/files/:fileId`（`data.read`，按租户校验，`inline` + `nosniff`） |
+| 公开链接 | 仅 PDF 文档：HMAC 签名 token（180 天），`GET /api/v1/public/product-files/:token`，无需登录 |
+| 邮件附件 | 草稿生成时选最多 3 个产品 PDF；发送时装配 `multipart/mixed`（单 ≤5 MB、总 ≤8 MB），快照写 `email_messages.attachments_json` |
+| 风险 | 公开链接"持有即可访问"、无按链接撤销；上传无病毒扫描（见 [SECURITY.md](./SECURITY.md) §9.5 / §14） |
+
 ---
 
 ## 10. 邮件发送、回复识别与人工接管（交付项 9）
@@ -689,7 +707,25 @@ stateDiagram-v2
 6. 保留全部历史邮件、分类与草稿（不删除）。
 7. 恢复自动化只允许从 `HUMAN_TAKEOVER / PAUSED / NEEDS_HUMAN_REVIEW` → `AUTOMATION_ACTIVE`；`DO_NOT_CONTACT` **不能**通过"恢复自动化"按钮解除，必须先由 admin/owner 删除 `suppression_records`。
 
-> 测试要求（CONTRACTS §9）：必须用真实任务队列 + 数据库状态 + 发送路径验证，不能只测前端按钮。**已用 `scripts/verify-safety.mjs` 在真实运行实例完成 15/15 端到端安全验收**（审批→队列→Worker 发送、接管拦截、抑制拦截、公开退订、窗口恢复），详见附录 B。
+> 测试要求（CONTRACTS §9）：必须用真实任务队列 + 数据库状态 + 发送路径验证，不能只测前端按钮。**已用 `scripts/verify-safety.mjs` 在真实运行实例完成 16/16 端到端安全/媒体验收**（审批→队列→Worker 发送、接管拦截、抑制拦截、公开退订、窗口恢复、产品 PDF 上传→公开链接→草稿附件→发送快照），详见附录 B。
+
+### 10.4 邮件附件装配（v1.1）
+
+```mermaid
+flowchart LR
+    P["产品 PDF<br/>product_files"] --> D["草稿生成<br/>draft.generate"]
+    D --> A["message_drafts.attachments_json<br/>（最多 3 个 PDF）"]
+    A --> S["email.send 发送管线"]
+    S --> M["MIME multipart/mixed<br/>单 ≤5MB / 总 ≤8MB"]
+    M --> SMTP["SMTP / 模拟邮箱"]
+    S --> SN["email_messages.attachments_json<br/>（实际发送快照）"]
+    D --> L["正文写入公开链接<br/>Product catalogue (PDF): <publicUrl>"]
+```
+
+- 附件来源：草稿关联活动的产品，或企业已匹配产品；只取 `application/pdf`。
+- 正文链接：提示词 v2 要求最多引用两个唯一 `publicUrl`；发送管线在退订段之前补齐缺失链接。
+- 失败策略：附件缺失/超限/类型不允许 → 记录 warning 并跳过，**不整封失败**（保证业务连续性）。
+- 审计：发送结果包含 `attachmentCount` 与 `attachmentWarnings`。
 
 ---
 
@@ -708,10 +744,11 @@ stateDiagram-v2
 | 限流 | 登录 10/min、初始化 5/min、健康检查 120/min、退订 30/min；内存滑动窗口 | ✅（单实例） |
 | 响应头 | CSP（`default-src 'self'`）、`X-Frame-Options: DENY`、`nosniff`、`Referrer-Policy`、`Permissions-Policy` | ✅ |
 | 静态文件 | 仅 `src/ assets/ admin/ index.html favicon manifest`；禁止 `server/ docs/` 与 `..` | ✅ |
-| 发送安全 | 五道闸 + 退订链接 + 抑制名单 + 接管 | ✅（E2E 15/15，附录 B） |
+| 发送安全 | 五道闸 + 退订链接 + 抑制名单 + 接管 | ✅（E2E 16/16，附录 B） |
+| 媒体/附件安全 | 上传 MIME 白名单 + 8 MB 上限 + 路径遍历防护；公开 PDF 链接 HMAC/180 天/租户校验；附件 5 MB/8 MB 限制 | ✅（测试 + E2E 覆盖；病毒扫描 ⚪、按链接撤销 ⚪） |
 | Agent 安全 | 提示词服务端、无 DB 句柄、工具最小权限、注入防护（输入隔离 + 输出校验） | ✅（实现 + 测试；真实模型质量 🔶 未验证） |
 | 审计 | 关键动作全部写 `audit_events`（含 before/after，自动脱敏） | ✅ |
-| 数据保留 | `settings.retention`（消息 730 天、联系人 1095 天、任务 30 天、审计 730 天） | 🟡（配置与字段已实现；`maintenance.retention` 清理任务 🟡） |
+| 数据保留 | `settings.retention`（消息 730 天、联系人 1095 天、任务 30 天、审计 730 天） | 🟡（配置已实现；`maintenance.retention` 任务已注册，清理效果 🔶 未实测） |
 | 导出/删除 | 企业/联系人导出 API；删除为软删（`deleted_at`）；工作空间删除需 owner | 🟡（导出 ✅；彻底删除/匿名化工具 ⚪） |
 
 ---
@@ -722,16 +759,17 @@ stateDiagram-v2
 flowchart TB
     subgraph Internet
         U["用户浏览器"]
-        R["邮件收件人（退订链接）"]
+        R["邮件收件人（退订链接 / 产品 PDF 链接）"]
     end
     subgraph Host["客户自有服务器 / VPS"]
         NG["反向代理（nginx / Caddy）<br/>TLS 终止 · 限流 · 静态缓存"]
         APP["node server/index.mjs<br/>单进程：HTTP + Worker<br/>监听 127.0.0.1:4173"]
-        DATA["DATA_DIR<br/>outreach.sqlite · uploads · logs · backups · secret.key"]
+        DATA["DATA_DIR<br/>outreach.sqlite · uploads/products · logs · backups · secret.key"]
         SVC["systemd / pm2 / 面板托管"]
     end
     U -->|"HTTPS 443"| NG --> APP
     R -->|"HTTPS /api/v1/public/unsubscribe/:token"| NG
+    R -->|"HTTPS /api/v1/public/product-files/:token"| NG
     APP --> DATA
     SVC -.->|"守护 / 自动重启"| APP
     APP -->|"可选：SMTP/IMAP 465/993"| MAIL["企业邮箱"]
@@ -759,7 +797,7 @@ flowchart TB
 | 版权归属 | `© 2026 智睿科技 保留所有权利。` 作者：ZHIRAI · 智睿科技 · 独立开发者 |
 | 代码许可 | 专有 / `UNLICENSED`（见根目录 [LICENSE](../LICENSE)）：未经书面商业授权不得复制、分发、转售、SaaS 化提供 |
 | 商业授权 | ① 软件授权（自托管份数/席位）；② 源码授权（含二次开发权）；③ 白标/OEM；均需签署合同（联系 xtang3125@gmail.com） |
-| 发行版本 | 语义化版本 `v1.0.0`；`CHANGELOG.md` 记录；zip 根目录平铺（见 [DEPLOY.md](../DEPLOY.md)） |
+| 发行版本 | 语义化版本 `v1.1.0`；`CHANGELOG.md` 记录；zip 根目录平铺（见 [DEPLOY.md](../DEPLOY.md)） |
 | 依赖清单 | [LICENSE-REGISTER.md](./LICENSE-REGISTER.md)：当前 0 个运行时 npm 依赖、0 个第三方代码 |
 | 第三方通知 | 未来引入第三方时须登记版本/许可证/版权声明/分发影响，并随发行物附带通知文件 |
 | 参考项目 | [RESEARCH.md](./RESEARCH.md)：仅研究，不进入构建产物 |
@@ -836,6 +874,10 @@ flowchart TB
 | 13 | 升级迁移失败 | 服务不可用 | 迁移事务 + 先备份 | 迁移前强制备份提示 |
 | 14 | 前端 e2e 自动化缺失 | 回归成本 | 已完成真实浏览器手工验收 | v1.x 引入 Playwright（需评估依赖策略） |
 | 15 | 未做渗透测试 | 未知漏洞 | 安全设计 + 审计 | 发布前第三方或自查清单 |
+| 16 | 产品 PDF 公开链接被转发（持有即可访问） | 资料泄露 | 仅 PDF 签发、180 天过期、删除文件即失效 | 只上传可公开资料；评估是否需按链接撤销/水印 |
+| 17 | 上传文件未做病毒扫描 | 恶意文件风险 | MIME 白名单 + 8 MB + 路径防护 | 企业网关 AV 扫描；后续可集成扫描 |
+| 18 | `uploads/` 不在数据库备份内 | 恢复后附件/主图缺失 | 文档与部署清单要求同时复制 | 备份脚本后续可打包 uploads |
+| 19 | 磁盘占用增长（PDF/图片） | 存储成本 | 单文件 8 MB + 单产品 100 文件 | 配额/清理策略；监控磁盘 |
 
 ---
 
@@ -856,6 +898,7 @@ flowchart TB
 | ADR-011 | 数据模型 | 显式表 + JSON 扩展，不做 EAV | 扩展字段查询弱 |
 | ADR-012 | 多租户 | 共享库 + `workspace_id` 行级隔离 | 依赖开发者纪律 + 测试 |
 | ADR-013 | 部署 | 单机 + 反向代理，不做 K8s | 规模上限 |
+| ADR-014 | 产品媒体与公开 PDF 链接 | 本地 uploads + HMAC 签名公开链接（180 天，仅 PDF） | 链接持有即可访问、无按链接撤销、需单独备份 uploads |
 
 详细内容（背景/替代/后果）见 **[DECISIONS.md](./DECISIONS.md)**。
 
@@ -877,37 +920,40 @@ flowchart TB
 
 1. **单实例**：不支持多副本共享 SQLite；高可用需外部方案。
 2. **数据规模**：十万级联系人、百万级邮件消息在 SQLite 下需索引与归档策略（🔶 未压测，仅设计推断）。
-3. **无内置计费**：v1.0 不含订阅/许可校验服务端；商业授权靠合同与发行物管理。
+3. **无内置计费**：当前版本不含订阅/许可校验服务端；商业授权靠合同与发行物管理。
 4. **不内置反垃圾邮件基础设施**：SPF/DKIM/DMARC、IP 预热由客户自行负责。
 5. **Agent 质量**：取决于所选模型与提示词版本；不承诺"越用越准"（方案明确禁止）。
-6. **不自动加 LinkedIn/WhatsApp**：平台 ToS 与账号风险，v1.0 不做。
+6. **不自动加 LinkedIn/WhatsApp**：平台 ToS 与账号风险，当前版本不做。
 7. **浏览器兼容**：面向现代常青浏览器（Chrome/Edge/Firefox/Safari 近两年版本）；未做 IE/旧版兼容。
+8. **文件存储依赖本地磁盘**：产品 PDF/图片存于 `DATA_DIR/uploads`，数据库备份不含文件；多副本/对象存储未支持，需客户自行备份与容量规划。
+9. **公开 PDF 链接是共享凭证**：持有即可访问、180 天过期、无按链接撤销；敏感资料不应上传。
 
 ---
 
 ## 附录 A：当前实现状态矩阵
 
-> 采集时间：2026-10-22（交付前按实际代码与测试复核）。
+> 采集时间：2026-10-23（v1.1 交付前按实际代码与测试复核）。
 
 | 模块 | 状态 | 备注 |
 | --- | --- | --- |
 | `server/core/**`（db/http/auth/crypto/audit/validate/time/ids/logger/secrets/rate-limit/errors/license-info） | ✅ 已实现 | 测试辅助 `tests/helpers.mjs` |
-| `server/db/migrations/001_init.sql` | ✅ 已实现 | 40 张表 |
+| `server/db/migrations/001_init.sql` + `002_product_media_attachments.sql` | ✅ 已实现 | 40 张业务表（含迁移表 41）；v1.1 全部 `ADD COLUMN` |
 | 认证/工作空间/设置/凭据/审计/通知/用量/运维/健康/公开路由 | ✅ 已实现 | `routes/{auth,workspace,settings,audit,notifications,usage,ops,health,public}.mjs` |
 | 数据域（企业/联系人/产品/ICP/发现/导入/评分） | ✅ 已实现 | `routes/{companies,contacts,products,icps,discovery,imports}.mjs` + repositories/services |
+| 产品媒体/文件 | ✅ 已实现 | `routes/product-files.mjs` + `services/product-files.mjs`（上传/下载/主图/公开链接） |
 | CRM 域（活动/草稿/收件箱/商机/接管/抑制/邮箱账户/仪表盘） | ✅ 已实现 | `routes/{campaigns,drafts,inbox,deals,automation,suppression,email-accounts,dashboard}.mjs` |
-| Agent 层 | ✅ 已实现 | Provider（OpenAI 兼容 + simulation）、10 角色、服务端提示词、执行记录 |
-| 任务队列/Worker/邮件协议/发送管线 | ✅ 已实现 | `jobs/{queue,worker,scheduler,send-pipeline}.mjs`、`mail/{smtp,imap,mime,simulation}.mjs` |
+| Agent 层 | ✅ 已实现 | Provider（OpenAI 兼容 + simulation）、**11 角色**（含 `keyword_research`）、`outreach_writer@2`、执行记录 |
+| 任务队列/Worker/邮件协议/发送管线 | ✅ 已实现 | `jobs/{queue,worker,scheduler,send-pipeline}.mjs`、`mail/{smtp,imap,mime,simulation}.mjs`（含附件） |
 | 前端外壳/组件/仪表盘 | ✅ 已实现 | `src/app/**`、`src/components/**`、`src/pages/dashboard.js` |
 | 前端业务页面（发现/企业/企业详情/联系人/产品/ICP/活动/草稿与审批/收件箱/商机/自动化/Agent/任务/设置） | ✅ 已实现 | 15 个页面模块 / 16 条路由；真实浏览器验收通过 |
-| 脚本（init-db/seed-demo/reset-password/backup/verify-safety） | ✅ 已实现 | `scripts/` 下均已提供（`verify-safety.mjs` 为端到端安全验收） |
-| 测试 | ✅ | `npm test`（`node --test`）：274 项，273 通过、1 跳过、0 失败（Node v24.14.0，2026-10-22） |
+| 脚本（init-db/seed-demo/reset-password/backup/verify-safety） | ✅ 已实现 | `scripts/` 下均已提供（`verify-safety.mjs` 为端到端安全/媒体验收） |
+| 测试 | ✅ | `npm test`（`node --test`）：**309 项，308 通过、1 跳过、0 失败**（Node v24.14.0，2026-10-23） |
 
 ---
 
 ## 附录 B：19 项交付 ↔ 实现对照与验收结果
 
-### C.1 方案第八节 19 项交付对照
+### B.1 方案第八节 19 项交付对照
 
 | # | 方案要求 | 本文位置 | 实现状态 | 证据 |
 | --- | --- | --- | --- | --- |
@@ -915,38 +961,40 @@ flowchart TB
 | 2 | 业务流程图 | §3 | ✅ | Mermaid 流程图 |
 | 3 | 系统总架构图 | §4 | ✅ | Mermaid 架构图 |
 | 4 | 模块职责与依赖关系图 | §5 | ✅ | 分层图 + 职责表 + 文件所有权 |
-| 5 | Agent 职责和调用关系图 | §6 | ✅ | 10 角色 + `runAgent()` + 执行记录（代码 `server/agents/**`） |
-| 6 | 数据流和任务执行流程 | §7 | ✅ | 时序图 + 12 类任务 + 队列语义（代码 `server/jobs/**`） |
-| 7 | 数据库实体关系设计 | §8 + [DATA-MODEL.md](./DATA-MODEL.md) | ✅ | 40 张表（实测） |
-| 8 | 外部服务与适配器设计 | §9 | ✅ | 8 个 Provider + 加密凭据 |
-| 9 | 邮件发送、回复识别和人工接管机制 | §10 | ✅ | 五道闸 + 11 类分类 + 6 态接管；E2E 验证 |
-| 10 | 安全、隐私和合规设计 | §11 + [SECURITY.md](./SECURITY.md) + [COMPLIANCE.md](./COMPLIANCE.md) | ✅ | 威胁模型 T1–T18 + 生产清单；法律审查 🔶 待外部复核 |
-| 11 | 独立部署架构 | §12 + [DEPLOY.md](../DEPLOY.md) | ✅ | Windows/Linux/systemd/nginx/HTTPS/备份恢复 |
+| 5 | Agent 职责和调用关系图 | §6 | ✅ | **11 角色** + `runAgent()` + 执行记录（`server/agents/**`） |
+| 6 | 数据流和任务执行流程 | §7 | ✅ | 时序图 + 12 类任务 + 队列语义（`server/jobs/**`） |
+| 7 | 数据库实体关系设计 | §8 + [DATA-MODEL.md](./DATA-MODEL.md) | ✅ | 40 张业务表（含迁移表 41，实测） |
+| 8 | 外部服务与适配器设计 | §9 | ✅ | 8 个 Provider + 加密凭据 + 本地媒体存储/公开链接 |
+| 9 | 邮件发送、回复识别和人工接管机制 | §10 | ✅ | 五道闸 + 附件装配 + 11 类分类 + 6 态接管；E2E 验证 |
+| 10 | 安全、隐私和合规设计 | §11 + [SECURITY.md](./SECURITY.md) + [COMPLIANCE.md](./COMPLIANCE.md) | ✅ | 威胁模型 T1–T20 + 生产清单；法律审查 🔶 待外部复核 |
+| 11 | 独立部署架构 | §12 + [DEPLOY.md](../DEPLOY.md) | ✅ | Windows/Linux/systemd/nginx/HTTPS/备份恢复（含 uploads） |
 | 12 | 商业分发与许可证策略 | §13 + [LICENSE-REGISTER.md](./LICENSE-REGISTER.md) | ✅ | 专有许可 + 0 依赖登记 |
 | 13 | 开源项目参考清单 | §14 + [RESEARCH.md](./RESEARCH.md) | ✅ | 8 个项目 |
 | 14 | 各项目许可证和适用范围 | §15 + RESEARCH §4 | ✅ | 2026-10-22 读取 LICENSE 核验（仓库级） |
 | 15 | 哪些只研究、哪些可能采用 | §16 + RESEARCH §3 | ✅ | A/B/C/D 分类；当前 0 采用 |
 | 16 | 外部服务用途、费用、替代 | §17 + RESEARCH §7 | ✅ | 费用为量级参考，需按供应商当期定价复核 |
-| 17 | 已知风险与待验证事项 | §18 | ✅ | 15 项风险 + §20.2 技术限制 |
-| 18 | 开发前关键架构决定 | §19 + [DECISIONS.md](./DECISIONS.md) | ✅ | 13 条 ADR（选择/理由/替代/代价） |
-| 19 | 商业化可行性与技术限制 | §20 | ✅ | 可行性与 7 项限制 |
+| 17 | 已知风险与待验证事项 | §18 | ✅ | 19 项风险 + §20.2 技术限制 |
+| 18 | 开发前关键架构决定 | §19 + [DECISIONS.md](./DECISIONS.md) | ✅ | 14 条 ADR（选择/理由/替代/代价） |
+| 19 | 商业化可行性与技术限制 | §20 | ✅ | 可行性与 9 项限制 |
 
-### C.2 验收结果（2026-10-22，发布负责人执行）
+### B.2 验收结果（2026-10-23，发布负责人执行）
 
 | 层次 | 方式 | 结果 | 备注 |
 | --- | --- | --- | --- |
-| 自动化测试 | `npm test`（`node --test --test-force-exit "tests/**/*.test.mjs"`） | **274 项：273 通过 / 1 跳过 / 0 失败**（约 3.8s） | 单元 + 集成（含租户隔离、审批、接管、发送管线、SMTP/IMAP/MIME 协议层） |
-| 端到端安全验收 | `node scripts/verify-safety.mjs` | **15/15 通过** | 审批→队列→Worker 发送、接管拦截、抑制拦截、公开退订、发送窗口恢复 |
-| 前端浏览器验收 | 真实浏览器逐页交互 | **15 个页面模块 / 16 条路由通过** | 列表→详情→操作→反馈→空态；导航、通知、设置各页签 |
-| 静态一致性检查 | 文档链接 / OpenAPI YAML / 路由与表数量 | 通过 | 154 条路由、40 张表、OpenAPI 101 paths / 138 operations / 32 schemas |
+| 自动化测试 | `npm test`（`node --test --test-force-exit "tests/**/*.test.mjs"`） | **309 项：308 通过 / 1 跳过 / 0 失败**（约 3.4s） | 单元 + 集成（租户隔离、审批、接管、发送管线、附件/MIME、SMTP/IMAP 协议层） |
+| 端到端安全/媒体验收 | `node scripts/verify-safety.mjs` | **16/16 通过** | v1.0 的审批/接管/抑制/退订/窗口 + v1.1 产品 PDF 上传→公开链接→草稿附件→发送快照 |
+| 前端浏览器验收 | 真实浏览器逐页交互 | **15 个页面模块 / 16 条路由通过** | 产品媒体/关键词、发现国家快捷选择、草稿附件展示（v1.1 流程见 [VERIFICATION.md](./VERIFICATION.md)） |
+| 静态一致性检查 | 文档链接 / OpenAPI YAML / 路由与表数量 | 通过 | **161 条路由**、40 张业务表、OpenAPI **106 paths / 145 operations / 38 schemas** |
 
-### C.3 仍未验证（必须保留标注）
+### B.3 仍未验证（必须保留标注）
 
 - **真实外网 SMTP/IMAP**：协议层有单元测试与受控发送验证，但未用真实邮箱服务商做外网收发 E2E。
-- **真实模型 API**：OpenAI 兼容 Provider 已实现并有 mock 测试，但未用真实付费模型做质量评估。
+- **真实模型 API**：OpenAI 兼容 Provider 已实现并有 mock 测试，但未用真实付费模型做质量评估（含 AI 关键词质量）。
 - **法律审查**：GDPR/ePrivacy 各国规则未由律师复核（[COMPLIANCE.md](./COMPLIANCE.md) 明确非法律意见）。
-- **压测/容量**：未做长时间、大数据量压力测试（§20.2）。
-- **备份恢复演练**：脚本与步骤已提供，但未在客户生产数据上演练。
+- **压测/容量**：未做长时间、大数据量、上传磁盘占用压力测试（§20.2）。
+- **备份恢复演练**：脚本与步骤已提供，但未在客户生产数据上演练（含 `uploads/` 文件恢复）。
+- **上传文件病毒扫描**、**公开 PDF 链接按条撤销**：当前未实现。
+- **公开 PDF 链接在真实邮件客户端**的点击/预览表现：未用 Gmail/Outlook 实收验证。
 
 ---
 
@@ -960,11 +1008,15 @@ flowchart TB
 | 会话有效期 | 168 小时（7 天，可配 1h–365d） |
 | 密码哈希 | scrypt N=16384,r=8,p=1，密钥长度 32B |
 | 凭据加密 | AES-256-GCM，HKDF-SHA256，AAD 绑定工作空间+类型+供应商 |
-| 数据表数量 | 40 |
-| 路由数量 | 154（方法 × 路径，25 个路由模块） |
+| 公开文件 token | HMAC 签名，180 天有效，按工作空间/产品/文件校验 |
+| 数据表数量 | 40 张业务表（含 `schema_migrations` 共 41） |
+| 路由数量 | 161（方法 × 路径，26 个路由模块） |
 | 前端页面 | 15 个页面模块 / 16 条路由 |
-| 自动化测试 | 274 项（273 通过 / 1 跳过） |
-| 安全 E2E | 15/15（`scripts/verify-safety.mjs`） |
+| Agent 角色 | 11（含 `keyword_research`；`outreach_writer@2`） |
+| 自动化测试 | 309 项（308 通过 / 1 跳过） |
+| 安全/媒体 E2E | 16/16（`scripts/verify-safety.mjs`） |
+| 产品文件限制 | 图片 PNG/JPEG/WebP、文档 PDF；单文件 8 MB；公开链接仅 PDF、180 天 |
+| 邮件附件限制 | 草稿最多 3 个 PDF；发送单 ≤5 MB、总 ≤8 MB |
 | 角色 / capability | 4 角色 / 25 能力 |
 | 设置分组 | 6（outreach/limits/retention/ai/compliance/enrichment） |
 | 外部数据源目录 | 8（3 默认启用 + 2 可配置 + …） |

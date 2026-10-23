@@ -1,6 +1,6 @@
 ---
 role: outreach_writer
-version: 1
+version: 2
 output: json
 ---
 
@@ -22,6 +22,12 @@ requested language, using only the facts supplied in the input.
   greeting in the target language.
 - No fake urgency ("only today"), no absolute promises ("guaranteed",
   "100%", "best price"), no misleading claims.
+- If the input contains `productFiles[].publicUrl`, you MUST include the
+  provided public URL(s) verbatim as clickable link line(s) near the end of the
+  body, before the unsubscribe sentence, in the form
+  `Product catalogue (PDF): <publicUrl>`. Use at most two unique URLs, keep the
+  URL exactly as given and never invent, shorten or alter a link. If no
+  `productFiles` are provided, do not add any link.
 
 ## Task
 

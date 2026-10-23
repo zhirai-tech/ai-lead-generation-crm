@@ -47,6 +47,7 @@ const CONTEXT_KEYS = Object.freeze({
     'preferences',
     'settings',
     'compliance',
+    'productFiles',
     'history',
     'score',
     'includeUnsubscribe',
@@ -99,6 +100,7 @@ const CONTEXT_KEYS = Object.freeze({
     'language',
     'locale',
   ],
+  keyword_research: ['product', 'products', 'icp', 'company', 'locale'],
 });
 
 function clampValue(value, depth = 0) {
@@ -145,6 +147,26 @@ export const matchProduct = createConvenience('product_matching');
 export const complianceCheck = createConvenience('compliance_guard');
 export const reviewQuality = createConvenience('quality_review');
 
+/**
+ * v1.1: generate English B2B discovery keywords for one product.
+ * Writes agent_executions / usage_records like every other convenience helper.
+ * @returns {Promise<{keywords:string[], negativeKeywords:string[], searchQueries:string[], notes:string}>}
+ */
+export async function generateProductKeywords({
+  workspaceId,
+  product = {},
+  actorType = 'system',
+  actorId = null,
+  jobId = null,
+  createdBy = null,
+  locale = null,
+} = {}) {
+  const input = { product: clampValue(product && typeof product === 'object' ? product : {}) };
+  if (locale) input.locale = String(locale).slice(0, 12);
+  const result = await runAgent({ workspaceId, role: 'keyword_research', input, actorType, actorId, jobId, createdBy });
+  return result.output;
+}
+
 /** Optional orchestrator helper (declared in the catalogue, not required by 7.3). */
 export async function orchestratePlan({ workspaceId, goal, context = {}, actorType = 'system', actorId = null, jobId = null, createdBy = null } = {}) {
   const input = prepareAgentContext('orchestrator', { goal, context });
@@ -161,6 +183,7 @@ export const CONVENIENCE_ROLES = Object.freeze({
   matchProduct: 'product_matching',
   complianceCheck: 'compliance_guard',
   reviewQuality: 'quality_review',
+  generateProductKeywords: 'keyword_research',
 });
 
 export default {
@@ -176,5 +199,6 @@ export default {
   matchProduct,
   complianceCheck,
   reviewQuality,
+  generateProductKeywords,
   orchestratePlan,
 };

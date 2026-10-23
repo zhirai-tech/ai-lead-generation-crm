@@ -54,7 +54,7 @@ function authLayout(panel) {
 }
 
 function authFooter() {
-  return el('div', 'auth-footer', [el('span', '', 'ZHIRAI · 智睿科技 · 独立开发者'), el('span', '', 'v1.0.0')]);
+  return el('div', 'auth-footer', [el('span', '', 'ZHIRAI · 智睿科技 · 独立开发者'), el('span', '', 'v1.1.0')]);
 }
 
 function passwordField(label, { autocomplete = 'new-password', help = null } = {}) {

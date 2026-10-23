@@ -1,8 +1,8 @@
 # 数据模型说明（Data Model）
 
-> 项目：ZHIRAI Europe B2B AI Outreach Platform v1.0.0
+> 项目：ZHIRAI Europe B2B AI Outreach Platform v1.1.0
 > 作者：ZHIRAI · 智睿科技 · 独立开发者
-> 事实来源：`server/db/migrations/001_init.sql`（**40 张表**），字段名与约束以该文件为准。
+> 事实来源：`server/db/migrations/001_init.sql` + `002_product_media_attachments.sql`（**40 张业务表**；连迁移表 `schema_migrations` 共 41 个表），字段名与约束以迁移文件为准。
 > 本文解释"为什么这样设计"与"怎么用"，不替代 SQL。
 
 ---
@@ -38,7 +38,10 @@
 | 外部服务 | `integration_credentials`、`external_providers` | 2 |
 | 执行与运维 | `agent_executions`、`background_jobs`、`usage_records`、`audit_events`、`notifications` | 5 |
 | 合规与导入 | `legal_basis_records`、`import_runs`、`discovery_runs` | 3 |
-| **合计** | | **40** |
+| **合计（业务表）** | | **40** |
+
+> 另有迁移版本表 `schema_migrations(name, applied_at)`，因此数据库内表总数为 **41**。
+> v1.1 的变更全部通过 `002_product_media_attachments.sql` 的 `ALTER TABLE ADD COLUMN` 完成，**未新增业务表**。
 
 ---
 
@@ -55,6 +58,8 @@
 | 软删除 | `deleted_at TEXT NULL`：`workspaces`、`products`、`companies`、`contacts`、`campaigns` |
 | 外键 | 子表 `ON DELETE CASCADE`（如 contact_sources）；"弱引用"用 `ON DELETE SET NULL`（如 `message_drafts.account_id`） |
 | 索引 | 以 `(workspace_id, 常用过滤列, 排序列)` 复合索引为主；唯一索引用部分索引（`WHERE ... IS NOT NULL`） |
+| 文件存储 | `product_files.storage_path` 存**相对 `uploadsDir` 的路径**（如 `products/<workspaceId>/<productId>/<fileId>.pdf`），实际路径 `<DATA_DIR>/uploads/...`；DB 只存元数据与相对路径 |
+| 附件快照 | `message_drafts.attachments_json` 存"计划附件"，`email_messages.attachments_json` 存"实际发送快照"，两者都是 JSON 数组 |
 
 ---
 
@@ -126,6 +131,8 @@ erDiagram
         TEXT category
         TEXT specs_json
         TEXT certifications_json
+        TEXT keywords_json
+        TEXT main_image_file_id
         TEXT status
         TEXT deleted_at
     }
@@ -133,6 +140,9 @@ erDiagram
         TEXT id PK
         TEXT product_id FK
         TEXT filename
+        TEXT mime_type
+        INTEGER size_bytes
+        TEXT kind
         TEXT storage_path
     }
     ICPS {
@@ -308,6 +318,7 @@ erDiagram
         TEXT message_id_header
         TEXT subject
         TEXT body_text
+        TEXT attachments_json
         TEXT status
     }
     MESSAGE_DRAFTS {
@@ -317,6 +328,7 @@ erDiagram
         TEXT status
         TEXT quality_json
         TEXT guard_json
+        TEXT attachments_json
         TEXT sent_message_id FK
     }
     CONVERSATION_CLASSIFICATIONS {
@@ -380,11 +392,13 @@ erDiagram
 
 | 表 | 用途 | 关键字段 |
 | --- | --- | --- |
-| `products` | 产品资料 | `name`、`category`、`sku`、`specs_json`、`applications_json`、`materials`、`certifications_json`、`capacity`、`moq`、`pricing_terms`、`samples`、`lead_time`、`status(active/draft/archived)` |
-| `product_files` | 产品资料文件 | `filename`、`mime_type`、`size_bytes`、`storage_path`（在 `DATA_DIR/uploads`） |
+| `products` | 产品资料 | `name`、`category`、`sku`、`specs_json`、`applications_json`、`materials`、`certifications_json`、`capacity`、`moq`、`pricing_terms`、`samples`、`lead_time`、`keywords_json`（AI/人工关键词数组）、`main_image_file_id`（主图，指向 `product_files.id`）、`status(active/draft/archived)` |
+| `product_files` | 产品图片 / PDF 资料 | `filename`、`mime_type`、`size_bytes`、`kind(image/document)`、`storage_path`（相对 `DATA_DIR/uploads` 的路径） |
 | `icps` | 理想客户画像 | `product_id`、`target_countries_json`、`target_regions_json`、`target_company_types_json`、`target_sizes_json`、`target_roles_json`、`include_keywords_json`、`exclude_keywords_json`、`min_score`、`is_active` |
 
 > **事实纪律**：`products` 中的认证/产能/价格/案例是**唯一可信来源**；Agent 不得编造这些字段之外的内容。空字段必须保持空，不得由 AI 填充。
+> **关键词**：`keywords_json` 由用户手工填写或 `keyword_research` Agent 生成（≤30 个、每个 ≤80 字符、大小写不敏感去重）；用于企业发现的关键词预填。**关键词不是产品事实声明**。
+> **主图**：`main_image_file_id` 只允许指向 `product_files.kind='image'` 的行；删除主图时由服务层清空该字段（无数据库外键，见迁移注释）。
 
 ### 4.3 企业与联系人
 
@@ -413,8 +427,8 @@ erDiagram
 | `campaign_targets` | 活动目标 | `company_id`、`contact_id`、`status(enrolled/active/paused/completed/replied/unsubscribed/bounced/failed)`、`current_step`、`next_run_at`、`last_contacted_at` | `UNIQUE(campaign_id, contact_id)` |
 | `email_accounts` | 发件邮箱 | `address`、`protocol(smtp_imap/simulation)`、SMTP/IMAP 主机端口、`credential_enc`（加密）、`daily_limit`（默认 50）、`last_sync_at`、`last_error` | `UNIQUE(workspace_id, address)` |
 | `email_threads` | 线程 | `account_id`、`company_id`、`contact_id`、`subject`、`last_message_at`、`message_count`、`status(open/waiting/replied/closed/archived)`、`classification` | — |
-| `email_messages` | 邮件 | `direction(inbound/outbound)`、`from_address`、`to_addresses_json`、`subject`、`body_text`、`body_html`、`message_id_header`、`in_reply_to`、`references_json`、`status(queued/sending/sent/failed/bounced/received)`、`is_read`、`raw_headers_json` | `UNIQUE(workspace_id, account_id, message_id_header)`（去重） |
-| `message_drafts` | 草稿 | `company_id`、`contact_id`、`campaign_id`、`campaign_step_id`、`account_id`、`subject`、`body_text`、`language`、`status(draft/pending_approval/approved/rejected/scheduled/sent/failed/discarded)`、`generated_by`（→agent_executions）、`quality_json`、`guard_json`、`approved_by/at`、`scheduled_at`、`sent_message_id`、`rejection_reason` | 发送前必须 `approved` |
+| `email_messages` | 邮件 | `direction(inbound/outbound)`、`from_address`、`to_addresses_json`、`subject`、`body_text`、`body_html`、`message_id_header`、`in_reply_to`、`references_json`、`status(queued/sending/sent/failed/bounced/received)`、`is_read`、`raw_headers_json`、`attachments_json`（发送时的附件快照） | `UNIQUE(workspace_id, account_id, message_id_header)`（去重） |
+| `message_drafts` | 草稿 | `company_id`、`contact_id`、`campaign_id`、`campaign_step_id`、`account_id`、`subject`、`body_text`、`language`、`status(draft/pending_approval/approved/rejected/scheduled/sent/failed/discarded)`、`generated_by`（→agent_executions）、`quality_json`、`guard_json`、`attachments_json`（最多 3 个产品 PDF）、`approved_by/at`、`scheduled_at`、`sent_message_id`、`rejection_reason` | 发送前必须 `approved` |
 
 ### 4.6 回复与 CRM
 
@@ -451,6 +465,44 @@ erDiagram
 | `legal_basis_records` | 合法依据 | `company_id`、`contact_id`、`basis(legitimate_interest/consent/contract/legal_obligation)`、`source`、`note`、`evidence_json`、`recorded_by`、`recorded_at` |
 | `import_runs` | 导入批次 | `kind(companies/contacts/suppression)`、`filename`、`total_rows`、`created_count`、`updated_count`、`skipped_count`、`error_count`、`errors_json`、`status(running/completed/failed)`、`finished_at` |
 | `discovery_runs` | 发现批次 | `query_json`、`provider`、`status(queued/running/completed/failed/cancelled)`、`result_count`、`companies_created`、`error`、`started_at/finished_at` |
+
+### 4.10 产品文件与附件（v1.1）
+
+**JSON 形状**
+
+```jsonc
+// products.keywords_json
+["Battery Pack Bracket supplier", "EV parts distributor", "…"]   // ≤30，每项 ≤80 字符，去重
+
+// message_drafts.attachments_json / email_messages.attachments_json
+[
+  {
+    "productFileId": "pfl_01J…",
+    "filename": "catalogue.pdf",
+    "mimeType": "application/pdf",
+    "sizeBytes": 183420,
+    "publicUrl": "/api/v1/public/product-files/<token>"
+  }
+]
+```
+
+**文件存储布局**
+
+```text
+DATA_DIR/uploads/
+└─ products/<workspaceId>/<productId>/<fileId>.<ext>   # 例：pfl_…pdf / pfl_…png
+```
+
+| 规则 | 值 |
+| --- | --- |
+| 允许类型 | 图片 `image/png` / `image/jpeg` / `image/webp`；文档 `application/pdf` |
+| 单文件上限 | 8 MB（API body 上限 12 MB） |
+| 单产品文件数 | ≤100 |
+| 公开链接 | 仅 `kind=document` 的 PDF 生成 `publicUrl`；签名 token 180 天，按租户校验（详见 SECURITY.md） |
+| 草稿附件 | 最多 3 个 PDF；发送时单附件 ≤5 MB、总附件 ≤8 MB，超限跳过并记录 warning |
+| 附件快照 | 发送成功后写入 `email_messages.attachments_json`；当前收件箱 API 不回传附件列表 |
+
+> **恢复注意**：数据库备份不含 `uploads/` 实际文件；只恢复 DB 会导致附件与主图丢失（记录存在但文件缺失），备份时必须同时复制 `uploads/` 目录。
 
 ---
 
@@ -508,6 +560,7 @@ erDiagram
 | `idx_discovery_workspace` | discovery_runs | `(workspace_id, created_at)` | 发现批次 |
 | `idx_agent_exec_workspace` | agent_executions | `(workspace_id, created_at)` | 执行记录 |
 | `idx_memberships_user` | memberships | `(user_id)` | 登录时查用户租户 |
+| `idx_product_files_product` | product_files | `(product_id, kind)` | 产品详情/附件选择（v1.1 新增） |
 
 ---
 
@@ -539,6 +592,11 @@ erDiagram
 | 10 | 评分可解释 | `factors_json` + `exclusions_json` + `explanation` 必填（服务层） |
 | 11 | 企业/联系人主记录唯一 | 域名/邮箱唯一索引 |
 | 12 | JSON 列非 null | 默认 `'{}'`/`'[]'` |
+| 13 | 主图必须是图片 | 服务层校验 `kind='image'`；删除主图清空 `main_image_file_id` |
+| 14 | 草稿附件只允许产品 PDF | 服务层取 `mimeType='application/pdf'` 且最多 3 个；发送时再次校验 MIME/大小 |
+| 15 | 公开链接只对 PDF 文档生成 | `buildFileView` 仅对 `kind='document'` 生成 `publicUrl`；图片返回 `null` |
+| 16 | 文件访问按租户隔离 | 认证下载 `findProductFile(workspace_id, product_id, file_id)`；公开链接按 token 中 `w/p/f` 联合校验 |
+| 17 | 上传路径防遍历 | `resolveStoragePath` 拒绝 `..` 且校验解析后仍在 uploads 根内；文件名去路径/控制字符 |
 
 ---
 
@@ -546,13 +604,14 @@ erDiagram
 
 | 数据 | 设置键 | 默认 | 清理方式 | 备注 |
 | --- | --- | --- | --- | --- |
-| 邮件消息 | `retention.messageDays` | 730 | `maintenance.retention` 删除过期 `email_messages`（🔶 待实现） | 线程可保留摘要 |
+| 邮件消息 | `retention.messageDays` | 730 | `maintenance.retention` 删除过期 `email_messages`（任务已注册；清理效果 🔶 未实测） | 线程可保留摘要 |
 | 联系人 | `retention.contactDays` | 1095 | 软删或删除长期无互动联系人 | 需先检查是否有商机 |
 | 任务 | `retention.jobDays` | 30 | 删除已完成/失败任务 | 保留 `dead` 一段时间便于排查 |
 | 审计 | `retention.auditDays` | 730 | 删除过期审计 | 安全追责需要 |
 | 用量 | `retention.usageDays` | 730 | 删除过期用量 | 报表用 |
 | **抑制名单** | — | **永久** | **不清理** | 合规要求：必须记住反对 |
 | 合法依据记录 | — | 永久 | 不清理 | 合规举证 |
+| 产品文件（`uploads/products/**`） | — | 随产品生命周期 | 删除文件记录时删除物理文件；产品软删**不自动删文件** | 需人工清理归档；DB 备份不含文件 |
 
 **注意**：清理任务必须**排除 `suppression_records` 与 `legal_basis_records`**，否则会导致"已退订的人被再次联系"。
 
@@ -571,7 +630,21 @@ erDiagram
 | 回滚 | 代码回滚 + 恢复备份（Sqlite 不支持自动 down 迁移） |
 | 命名 | 使用 `ADD COLUMN`（SQLite 支持）；重建表时遵循 SQLite 官方 12 步流程 |
 
-**当前版本**：`001_init.sql`（初始 schema，40 表）。
+**当前版本**：`001_init.sql`（初始 40 张业务表）+ `002_product_media_attachments.sql`（v1.1：产品关键词/主图、文件类别、草稿与邮件附件快照，全部为 `ADD COLUMN`）。
+
+**v1.1 迁移示例（只增不改）**：
+
+```sql
+ALTER TABLE products ADD COLUMN keywords_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE products ADD COLUMN main_image_file_id TEXT;
+ALTER TABLE product_files ADD COLUMN kind TEXT NOT NULL DEFAULT 'document'
+  CHECK (kind IN ('image', 'document'));
+ALTER TABLE message_drafts ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE email_messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_product_files_product ON product_files(product_id, kind);
+```
+
+> 升级已有 v1.0 实例：`npm run init-db`（或启动）会自动应用 `002`；SQLite `ADD COLUMN` 对已有行使用默认值，不需要回填。
 
 ---
 
@@ -613,7 +686,7 @@ erDiagram
 | AuditEvent | `audit_events` | 1:1 |
 | ConsentOrLegalBasisRecord | `legal_basis_records` | 1:1 |
 | **（新增）** | `memberships`、`sessions`、`api_keys`、`settings` | 身份/配置必需 |
-| **（新增）** | `product_files` | 产品资料文件 |
+| **（新增）** | `product_files` | 产品图片 / PDF 资料（v1.1 起含 `kind` 与主图引用） |
 | **（新增）** | `campaign_targets` | 活动与联系人的多对多（"Campaign 入组"） |
 | **（新增）** | `score_feedback` | 人工修正评分（方案 §5"用户可以修正 AI 判断"） |
 | **（新增）** | `notifications` | 高意向提醒 |
@@ -641,6 +714,10 @@ erDiagram
 | 8 | 邮件去重依赖 `Message-ID` | 部分邮件无 Message-ID | 唯一索引仅在非空时生效；无 ID 邮件可能重复入库（需服务层兜底） |
 | 9 | 时区 | 全部存 UTC，展示需转换 | 前端按 `Europe/Berlin`/用户时区展示 |
 | 10 | 事务内不做 async | `tx()` 禁止 async 回调 | 服务层需拆分：先查后写，事务只包同步操作 |
+| 11 | DB 备份不含上传文件 | 恢复后主图/附件记录存在但文件缺失 | 备份必须同时复制 `uploads/`（见 DEPLOY.md） |
+| 12 | 附件文件被外部删除 | 发送时记录 warning 并跳过附件（不整封失败） | 发送前可在草稿详情确认附件存在；定期检查 `uploads` |
+| 13 | 公开 PDF 链接为"持有者即可访问" | 链接泄漏等于文件泄漏 | 只对可公开资料生成链接；不把敏感文件上传为产品 PDF；链接 180 天后过期 |
+| 14 | 产品软删不删文件 | 长期运行后 `uploads` 增大 | 归档产品时人工清理文件；后续版本可加清理任务 |
 
 ---
 
@@ -694,6 +771,16 @@ SELECT category, SUM(quantity) AS qty, SUM(cost_estimate) AS cost
 FROM usage_records
 WHERE workspace_id = ? AND occurred_at >= ?
 GROUP BY category;
+
+-- 产品的图片/PDF 文件（产品详情、附件选择）
+SELECT id, filename, mime_type, size_bytes, kind, storage_path
+FROM product_files
+WHERE workspace_id = ? AND product_id = ?
+ORDER BY created_at ASC;
+
+-- 待发送草稿的附件（发送管线读取）
+SELECT id, attachments_json FROM message_drafts
+WHERE workspace_id = ? AND status = 'approved' AND attachments_json <> '[]';
 ```
 
 ---

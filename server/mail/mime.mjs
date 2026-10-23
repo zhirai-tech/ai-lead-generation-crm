@@ -17,8 +17,13 @@
 import { id } from '../core/ids.mjs';
 import { normalizeEmail } from '../core/validate.mjs';
 
-export const MIME_MAX_MESSAGE_BYTES = 2 * 1024 * 1024;
+export const MIME_MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 export const MIME_MAX_BODY_BYTES = 512 * 1024;
+/** Attachment limits from docs/MEDIA-ATTACHMENTS-CONTRACT.md section 4. */
+export const MIME_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+export const MIME_ATTACHMENTS_TOTAL_MAX_BYTES = 8 * 1024 * 1024;
+export const MIME_MAX_ATTACHMENTS = 20;
+const ATTACHMENT_FILENAME_MAX_LENGTH = 160;
 const MAX_SUBJECT_LENGTH = 4000;
 
 const EMAIL_RE = /^[^\s@<>()[\],;:"]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
@@ -255,15 +260,128 @@ export function buildUnsubscribeHeaders({ url = '', mailto = '' } = {}) {
   return headers;
 }
 
+// --------------------------------------------------------------- attachments
+const MIME_TYPE_RE = /^[a-z0-9][a-z0-9!#$&^_.+\-]{0,60}\/[a-z0-9][a-z0-9!#$&^_.+\-]{0,60}$/i;
+
+/** Strip paths / control chars from an attachment filename; never allow CRLF. */
+export function sanitizeAttachmentFilename(value, fallback = 'attachment.bin') {
+  let text = String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim();
+  text = text.replace(/^.*[\\/]/, '').replace(/["<>]/g, '');
+  if (!text) return fallback;
+  if (text.length > ATTACHMENT_FILENAME_MAX_LENGTH) {
+    const dot = text.lastIndexOf('.');
+    const extension = dot > 0 ? text.slice(dot).slice(0, 20) : '';
+    text = `${text.slice(0, ATTACHMENT_FILENAME_MAX_LENGTH - extension.length)}${extension}`;
+  }
+  return text || fallback;
+}
+
+function normalizeMimeType(value) {
+  const text = String(value || '').trim().toLowerCase();
+  return MIME_TYPE_RE.test(text) ? text : 'application/octet-stream';
+}
+
+/** `filename="..."` for ASCII names, RFC 2231 `filename*=UTF-8''...` otherwise. */
+export function formatAttachmentFilenameParam(filename, base = 'filename') {
+  const safe = sanitizeAttachmentFilename(filename);
+  if (/^[\x20-\x7E]+$/.test(safe) && !/["\\]/.test(safe)) return `${base}="${safe}"`;
+  const encoded = encodeURIComponent(safe).replace(/['()*!]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `${base}*=UTF-8''${encoded}`;
+}
+
+function normalizeAttachment(attachment, index) {
+  if (!attachment || typeof attachment !== 'object') {
+    throw mimeError('MIME_INVALID_ATTACHMENT', `附件 #${index + 1} 格式不正确`);
+  }
+  const content = Buffer.isBuffer(attachment.content)
+    ? attachment.content
+    : attachment.content instanceof Uint8Array
+      ? Buffer.from(attachment.content)
+      : null;
+  if (!content) throw mimeError('MIME_INVALID_ATTACHMENT', `附件 #${index + 1} 缺少二进制内容`);
+  return {
+    filename: sanitizeAttachmentFilename(attachment.filename, `attachment-${index + 1}.bin`),
+    mimeType: normalizeMimeType(attachment.mimeType),
+    content,
+    sizeBytes: content.length,
+  };
+}
+
+/**
+ * Validate + filter attachments against the size limits. Invalid / oversized
+ * attachments are skipped with a structured warning so callers (send pipeline)
+ * can continue without them, while `buildMimeMessage` turns warnings into a hard
+ * error when used directly.
+ * @returns {{attachments:Array, warnings:Array<{filename:string,code:string,message:string}>, totalBytes:number}}
+ */
+export function prepareAttachments(attachments) {
+  if (attachments === undefined || attachments === null) return { attachments: [], warnings: [], totalBytes: 0 };
+  if (!Array.isArray(attachments)) throw mimeError('MIME_INVALID_ATTACHMENTS', 'attachments 必须是数组');
+  if (attachments.length > MIME_MAX_ATTACHMENTS) {
+    throw mimeError('MIME_TOO_MANY_ATTACHMENTS', `附件数量超过上限（最多 ${MIME_MAX_ATTACHMENTS} 个）`);
+  }
+  const accepted = [];
+  const warnings = [];
+  let totalBytes = 0;
+  attachments.forEach((attachment, index) => {
+    const fallbackName = sanitizeAttachmentFilename(attachment && attachment.filename, `attachment-${index + 1}.bin`);
+    let normalized;
+    try {
+      normalized = normalizeAttachment(attachment, index);
+    } catch (error) {
+      warnings.push({ filename: fallbackName, code: error.code || 'MIME_INVALID_ATTACHMENT', message: error.message });
+      return;
+    }
+    if (normalized.sizeBytes === 0) {
+      warnings.push({ filename: normalized.filename, code: 'MIME_EMPTY_ATTACHMENT', message: `附件 ${normalized.filename} 内容为空，已跳过` });
+      return;
+    }
+    if (normalized.sizeBytes > MIME_ATTACHMENT_MAX_BYTES) {
+      warnings.push({
+        filename: normalized.filename,
+        code: 'MIME_ATTACHMENT_TOO_LARGE',
+        message: `附件 ${normalized.filename} 超过单文件上限 ${MIME_ATTACHMENT_MAX_BYTES} 字节，已跳过`,
+      });
+      return;
+    }
+    if (totalBytes + normalized.sizeBytes > MIME_ATTACHMENTS_TOTAL_MAX_BYTES) {
+      warnings.push({
+        filename: normalized.filename,
+        code: 'MIME_ATTACHMENTS_TOTAL_TOO_LARGE',
+        message: `附件总量超过上限 ${MIME_ATTACHMENTS_TOTAL_MAX_BYTES} 字节，已跳过 ${normalized.filename}`,
+      });
+      return;
+    }
+    totalBytes += normalized.sizeBytes;
+    accepted.push(normalized);
+  });
+  return { attachments: accepted, warnings, totalBytes };
+}
+
+function attachmentPartLines(attachment) {
+  return [
+    `Content-Type: ${attachment.mimeType}; ${formatAttachmentFilenameParam(attachment.filename, 'name')}`,
+    'Content-Transfer-Encoding: base64',
+    `Content-Disposition: attachment; ${formatAttachmentFilenameParam(attachment.filename)}`,
+    '',
+    base64Lines(attachment.content),
+  ];
+}
+
 // --------------------------------------------------------------------- build
 /**
  * Build a complete RFC 5322 message.
+ *
+ * When attachments are supplied the top level becomes `multipart/mixed`; the
+ * body keeps its `multipart/alternative` (text + html) or single-part form as
+ * the first part. Attachment payloads are base64 encoded with 76-char lines.
  *
  * @param {object} input
  * @param {string|object} input.from
  * @param {Array<string|object>} input.to
  * @param {Array<string|object>} [input.cc]
- * @param {string} [input.bcc]  (Bcc is never written into the message itself)
  * @param {string} input.subject
  * @param {string} [input.text]
  * @param {string} [input.html]
@@ -271,8 +389,9 @@ export function buildUnsubscribeHeaders({ url = '', mailto = '' } = {}) {
  * @param {string} [input.inReplyTo]
  * @param {Array<string>} [input.references]
  * @param {{url?:string, mailto?:string}} [input.unsubscribe]
+ * @param {Array<{filename:string, mimeType:string, content:Buffer}>} [input.attachments]
  * @param {object} [input.headers] additional headers (validated)
- * @returns {{raw:string, messageId:string, headers:object, boundary:string|null}}
+ * @returns {{raw:string, messageId:string, headers:object, boundary:string|null, mixedBoundary:string|null, alternativeBoundary:string|null, attachments:Array, attachmentBytes:number}}
  */
 export function buildMimeMessage({
   from,
@@ -285,6 +404,7 @@ export function buildMimeMessage({
   inReplyTo = null,
   references = [],
   unsubscribe = null,
+  attachments = [],
   headers = {},
   messageId = null,
 } = {}) {
@@ -320,6 +440,34 @@ export function buildMimeMessage({
   const boundary = `=_zhirai_${Date.now().toString(36)}_${id('b').slice(-12)}`;
   const bodyEntity = buildBodyEntity({ text: textBody, html: htmlBody, boundary });
 
+  // Attachments: multipart/mixed wrapper around the body entity.
+  const preparedAttachments = prepareAttachments(attachments);
+  if (preparedAttachments.warnings.length) {
+    throw mimeError('MIME_ATTACHMENT_REJECTED', preparedAttachments.warnings.map((warning) => warning.message).join('；'));
+  }
+  let contentType = bodyEntity.contentType;
+  let transferEncoding = bodyEntity.transferEncoding;
+  let messageBody = bodyEntity.body;
+  let mixedBoundary = null;
+  if (preparedAttachments.attachments.length) {
+    mixedBoundary = `=_zhirai_mixed_${Date.now().toString(36)}_${id('c').slice(-12)}`;
+    const boundaryLine = `--${mixedBoundary}`;
+    const parts = [
+      boundaryLine,
+      `Content-Type: ${bodyEntity.contentType}`,
+      `Content-Transfer-Encoding: ${bodyEntity.transferEncoding}`,
+      '',
+      bodyEntity.body.replace(/\r\n$/, ''),
+    ];
+    for (const attachment of preparedAttachments.attachments) {
+      parts.push(boundaryLine, ...attachmentPartLines(attachment));
+    }
+    parts.push(`${boundaryLine}--`, '');
+    messageBody = parts.join('\r\n');
+    contentType = `multipart/mixed; boundary="${mixedBoundary}"`;
+    transferEncoding = '7bit';
+  }
+
   const lines = [
     `From: ${fromValue}`,
     `To: ${toValue}`,
@@ -330,8 +478,8 @@ export function buildMimeMessage({
     safeInReplyTo ? `In-Reply-To: ${normalizeMessageId(safeInReplyTo)}` : null,
     refs.length ? `References: ${refs.map(normalizeMessageId).join(' ')}` : null,
     'MIME-Version: 1.0',
-    `Content-Type: ${bodyEntity.contentType}`,
-    `Content-Transfer-Encoding: ${bodyEntity.transferEncoding}`,
+    `Content-Type: ${contentType}`,
+    `Content-Transfer-Encoding: ${transferEncoding}`,
   ].filter(Boolean);
 
   const reserved = new Set(['from', 'to', 'cc', 'bcc', 'subject', 'date', 'message-id', 'mime-version', 'content-type', 'content-transfer-encoding']);
@@ -343,14 +491,27 @@ export function buildMimeMessage({
     lines.push(`${headerName}: ${headerValue}`);
   }
 
-  const raw = `${lines.join('\r\n')}\r\n\r\n${bodyEntity.body}`;
+  const raw = `${lines.join('\r\n')}\r\n\r\n${messageBody}`;
   if (Buffer.byteLength(raw, 'utf8') > MIME_MAX_MESSAGE_BYTES) throw mimeError('MIME_MESSAGE_TOO_LARGE', '邮件总大小超出限制');
   const headerMap = {};
   for (const line of lines) {
     const index = line.indexOf(':');
     if (index > 0) headerMap[line.slice(0, index)] = line.slice(index + 1).trim();
   }
-  return { raw, messageId: finalMessageId, headers: headerMap, boundary: bodyEntity.boundary };
+  return {
+    raw,
+    messageId: finalMessageId,
+    headers: headerMap,
+    boundary: mixedBoundary || bodyEntity.boundary,
+    mixedBoundary,
+    alternativeBoundary: bodyEntity.boundary,
+    attachments: preparedAttachments.attachments.map((attachment) => ({
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      sizeBytes: attachment.sizeBytes,
+    })),
+    attachmentBytes: preparedAttachments.totalBytes,
+  };
 }
 
 function normalizeBody(value) {
@@ -423,6 +584,24 @@ export function parseHeaderBlock(headerText) {
   return headers;
 }
 
+/** Decode an RFC 2231 extended parameter value (`UTF-8''%E4%B8%AD.pdf`). */
+export function decodeExtendedParam(value) {
+  const text = String(value ?? '');
+  const match = /^([^']*)'([^']*)'(.*)$/.exec(text);
+  if (match) {
+    try {
+      return decodeURIComponent(match[3]);
+    } catch {
+      return match[3];
+    }
+  }
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
 export function parseContentType(value) {
   const text = String(value || 'text/plain').trim();
   const [rawType, ...rest] = text.split(';');
@@ -430,10 +609,30 @@ export function parseContentType(value) {
   for (const part of rest) {
     const index = part.indexOf('=');
     if (index < 0) continue;
-    const key = part.slice(0, index).trim().toLowerCase();
+    const rawKey = part.slice(0, index).trim().toLowerCase();
     let paramValue = part.slice(index + 1).trim();
     if (paramValue.startsWith('"') && paramValue.endsWith('"')) paramValue = paramValue.slice(1, -1);
-    if (key) params[key] = paramValue;
+    if (!rawKey) continue;
+    const extended = rawKey.endsWith('*');
+    params[extended ? rawKey.slice(0, -1) : rawKey] = extended ? decodeExtendedParam(paramValue) : paramValue;
+  }
+  return { type: rawType.trim().toLowerCase(), params };
+}
+
+/** Parse a Content-Disposition header into `{type, params}`. */
+export function parseContentDisposition(value) {
+  const text = String(value || '').trim();
+  const [rawType, ...rest] = text.split(';');
+  const params = {};
+  for (const part of rest) {
+    const index = part.indexOf('=');
+    if (index < 0) continue;
+    const rawKey = part.slice(0, index).trim().toLowerCase();
+    let paramValue = part.slice(index + 1).trim();
+    if (paramValue.startsWith('"') && paramValue.endsWith('"')) paramValue = paramValue.slice(1, -1);
+    if (!rawKey) continue;
+    const extended = rawKey.endsWith('*');
+    params[extended ? rawKey.slice(0, -1) : rawKey] = extended ? decodeExtendedParam(paramValue) : paramValue;
   }
   return { type: rawType.trim().toLowerCase(), params };
 }
@@ -474,13 +673,13 @@ export function splitMultipart(bodyText, boundary) {
 
 /**
  * Parse one MIME entity (already separated from its parent).
- * @returns {{headers:object, text:string, html:string, attachments:number, children:Array}}
+ * @returns {{headers:object, text:string, html:string, attachments:number, attachment:object|null, attachmentList:Array, children:Array}}
  */
 export function parseMimeEntity(headerText, bodyText) {
   const headers = parseHeaderBlock(headerText);
   const contentType = parseContentType(headers['content-type']);
   const decoded = decodeTransferEncoding(bodyText || '', headers['content-transfer-encoding']);
-  const result = { headers, text: '', html: '', attachments: 0, children: [] };
+  const result = { headers, text: '', html: '', attachments: 0, attachment: null, attachmentList: [], children: [] };
   if (contentType.type.startsWith('multipart/')) {
     const boundary = contentType.params.boundary;
     if (!boundary) return result;
@@ -494,7 +693,10 @@ export function parseMimeEntity(headerText, bodyText) {
       else if (!childType.startsWith('multipart/') && childType !== 'text/plain' && childType !== 'text/html') result.attachments += 1;
       if (!result.text && child.text) result.text = child.text;
       if (!result.html && child.html) result.html = child.html;
+      if (child.attachment) result.attachmentList.push(child.attachment);
+      else if (child.attachmentList.length) result.attachmentList.push(...child.attachmentList);
     }
+    if (result.attachmentList.length === 1) result.attachment = result.attachmentList[0];
     return result;
   }
   const charset = String(contentType.params.charset || 'utf-8').toLowerCase();
@@ -506,6 +708,15 @@ export function parseMimeEntity(headerText, bodyText) {
     result.text = content;
   } else {
     result.attachments = 1;
+    const disposition = parseContentDisposition(headers['content-disposition']);
+    result.attachment = {
+      filename: disposition.params.filename || contentType.params.name || null,
+      mimeType: contentType.type,
+      disposition: disposition.type || null,
+      sizeBytes: decoded.length,
+      content: decoded,
+    };
+    result.attachmentList = [result.attachment];
   }
   return result;
 }
@@ -613,6 +824,9 @@ function normalizeDate(headerDate, fallback) {
 export default {
   MIME_MAX_MESSAGE_BYTES,
   MIME_MAX_BODY_BYTES,
+  MIME_ATTACHMENT_MAX_BYTES,
+  MIME_ATTACHMENTS_TOTAL_MAX_BYTES,
+  MIME_MAX_ATTACHMENTS,
   assertHeaderSafe,
   encodeHeaderValue,
   decodeHeaderValue,
@@ -628,6 +842,9 @@ export default {
   escapeHtml,
   textToHtml,
   buildUnsubscribeHeaders,
+  sanitizeAttachmentFilename,
+  formatAttachmentFilenameParam,
+  prepareAttachments,
   buildMimeMessage,
   parseMimeMessage,
   parseMimeEntity,
@@ -635,6 +852,8 @@ export default {
   splitMultipart,
   parseHeaderBlock,
   parseContentType,
+  parseContentDisposition,
+  decodeExtendedParam,
   parseAddressHeader,
   normalizeInboundMessage,
   normalizeMessageId,

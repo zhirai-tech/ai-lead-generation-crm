@@ -1,6 +1,6 @@
 # 部署指南（Deployment）
 
-> 项目：ZHIRAI Europe B2B AI Outreach Platform v1.0.0
+> 项目：ZHIRAI Europe B2B AI Outreach Platform v1.1.0
 > 作者：ZHIRAI · 智睿科技 · 独立开发者
 > 适用：Windows 10/11、Linux（Debian/Ubuntu/CentOS）、macOS 自托管部署。
 > 目标：**单机、单进程、零第三方运行时依赖**。默认端口 **4173**。
@@ -205,7 +205,7 @@ NODE_ENV=production
 ```
 
 > `TRUST_PROXY=1` **只**在 nginx 与 Node 同机且 nginx 可信时启用；否则攻击者可伪造 `X-Forwarded-For` 绕过限流。
-> `PUBLIC_BASE_URL` 必须是真实 HTTPS 地址：它决定退订链接与 Cookie 的 `Secure` 属性。
+> `PUBLIC_BASE_URL` 必须是真实 HTTPS 地址：它决定退订链接、**邮件中产品 PDF 公开链接**与 Cookie 的 `Secure` 属性。
 
 ### 5.3 nginx 配置
 
@@ -311,7 +311,7 @@ outreach.example.com {
 | `PORT` | `4173` | 监听端口（1–65535） |
 | `APP_NAME` | `ZHIRAI Outreach` | 应用显示名 |
 | `TRUST_PROXY` | `0` | `1` = 信任 `X-Forwarded-For/X-Real-IP/X-Forwarded-Host` |
-| `PUBLIC_BASE_URL` | `http://127.0.0.1:<PORT>` | 对外基址；退订链接、Secure Cookie 依据 |
+| `PUBLIC_BASE_URL` | `http://127.0.0.1:<PORT>` | 对外基址；退订链接、产品 PDF 公开链接、Secure Cookie 依据 |
 | `DATA_DIR` | `server/data` | 数据目录（相对根目录或绝对路径） |
 | `LOG_LEVEL` | `info` | `debug/info/warn/error/silent` |
 | `SESSION_TTL_HOURS` | `168` | 会话有效期（1–8760 小时） |
@@ -335,15 +335,16 @@ server/data/                     ← DATA_DIR
 ├─ outreach.sqlite-wal           # WAL 日志（运行中）
 ├─ outreach.sqlite-shm           # 共享内存（运行中）
 ├─ secret.key                    # 加密主密钥（0600）
-├─ uploads/                      # 产品资料文件
+├─ uploads/
+│  └─ products/<workspace>/<product>/<fileId>.<ext>   # 产品图片 / PDF 资料（v1.1；邮件附件来源）
 ├─ logs/app.log                  # 应用日志（JSON 行）
-└─ backups/                      # 备份（outreach-<时间戳>.sqlite）
+└─ backups/                      # 备份（outreach-<时间戳>.sqlite，仅数据库）
 ```
 
 | 项 | 要求 |
 | --- | --- |
 | 权限 | 仅运行账号与管理员可读写；`secret.key` 权限 600 |
-| 备份 | `outreach.sqlite` + `secret.key`（分别安全保存） |
+| 备份 | `outreach.sqlite` + `secret.key` + **`uploads/`**（产品图片/PDF 不在数据库备份内，必须单独复制） |
 | 不入库 | `.gitignore` 已排除 `server/data/` 与 `.env` |
 | 迁移 | 迁移 `DATA_DIR` 时**整目录复制**（含 `secret.key`），否则凭据不可解 |
 
@@ -390,9 +391,12 @@ npm run backup
 
 # 或直接用 sqlite3（停机或允许短暂锁）
 sqlite3 server/data/outreach.sqlite "VACUUM INTO 'server/data/backups/manual-$(date +%F).sqlite'"
+
+# 产品图片/PDF 必须单独备份（数据库备份不含 uploads）
+tar -czf "server/data/backups/uploads-$(date +%F).tar.gz" -C server/data uploads
 ```
 
-> `VACUUM INTO` 会生成一致性快照，**不需要停机**；但建议低峰执行。
+> `VACUUM INTO` 会生成一致性快照，**不需要停机**；但建议低峰执行。**`uploads/` 不在数据库备份内**，漏备份会导致恢复后主图/附件文件缺失。
 
 ### 8.2 恢复步骤
 
@@ -409,8 +413,12 @@ rm -f server/data/outreach.sqlite-wal server/data/outreach.sqlite-shm
 # 4) 放入备份
 cp server/data/backups/outreach-20261022-120000.sqlite server/data/outreach.sqlite
 
+# 4.1) 恢复产品图片/PDF（若有单独备份；否则附件/主图文件会缺失）
+tar -xzf server/data/backups/uploads-20261022.tar.gz -C server/data
+
 # 5) 权限
 chown zhirai:zhirai server/data/outreach.sqlite
+chown -R zhirai:zhirai server/data/uploads
 chmod 600 server/data/outreach.sqlite
 
 # 6) 启动并验证
@@ -418,7 +426,7 @@ sudo systemctl start zhirai-outreach
 curl -s http://127.0.0.1:4173/api/v1/health
 ```
 
-**恢复后必须验证**：登录 → 企业数量 → 最近邮件 → 设置是否保留 → 凭据是否可读（若 `secret.key` 未随备份恢复，需重新录入凭据）。
+**恢复后必须验证**：登录 → 企业数量 → 最近邮件 → 设置是否保留 → 凭据是否可读（若 `secret.key` 未随备份恢复，需重新录入凭据）→ 产品详情能看到主图/PDF 文件（验证 `uploads/` 已恢复）。
 
 ### 8.3 备份建议
 
@@ -428,7 +436,8 @@ curl -s http://127.0.0.1:4173/api/v1/health
 | 保留 | 本地 7 天 + 异地 30 天 |
 | 加密 | 备份文件含业务数据，建议加密后异地保存（`age`/`gpg`/7z 加密） |
 | 分离 | `secret.key` 与数据库备份**分开**存放；丢失 `secret.key` 只影响凭据，不丢业务数据 |
-| 演练 | 每季度至少做一次真实恢复演练 |
+| 文件 | **必须同时备份 `server/data/uploads/`**（产品图片/PDF；数据库备份不含文件） |
+| 演练 | 每季度至少做一次真实恢复演练（数据库 + `uploads/`） |
 
 ---
 
@@ -439,8 +448,9 @@ curl -s http://127.0.0.1:4173/api/v1/health
 ```bash
 cd /opt/zhirai-outreach
 
-# 1) 备份（必须）
+# 1) 备份（必须；数据库 + 产品文件）
 npm run backup
+tar -czf "server/data/backups/uploads-$(date +%F).tar.gz" -C server/data uploads
 
 # 2) 停服务
 sudo systemctl stop zhirai-outreach
@@ -449,6 +459,7 @@ sudo systemctl stop zhirai-outreach
 #    解压新版本到临时目录，然后覆盖代码文件；不要删除 server/data
 
 # 4) 应用迁移（也可在启动时自动执行）
+#    v1.0 → v1.1 会应用 002_product_media_attachments.sql（全部 ADD COLUMN）
 npm run init-db
 
 # 5) 启动并观察日志
@@ -457,6 +468,7 @@ journalctl -u zhirai-outreach -n 100 --no-pager
 ```
 
 **迁移机制**：`server/db/migrations/NNN_*.sql` 按文件名顺序执行，已执行的记录在 `schema_migrations` 表；启动时自动执行未应用的迁移（`server/index.mjs`）。迁移在事务中执行，失败会回滚并阻止启动。
+**v1.1 迁移**：`002_product_media_attachments.sql` 只做 `ALTER TABLE ADD COLUMN`（带默认值），升级不需要回填数据；旧数据自动获得 `keywords_json='[]'`、`attachments_json='[]'` 等默认值。
 
 ### 9.2 回滚
 
@@ -485,7 +497,7 @@ journalctl -u zhirai-outreach -n 100 --no-pager
 5. **邮箱账户**：添加 SMTP/IMAP 账号（或先用 `simulation` 协议体验流程）。
 6. **设置 → 限额/发送窗口**：按目标市场设置（默认 Europe/Berlin 9–17 工作日）。
 7. 录入产品 → 定义 ICP → 运行发现 → 评分 → 生成草稿 → 审批 → 发送。
-8. 打开发送前先做一次**测试发送给自己的邮箱**。
+8. 打开发送前先做一次**测试发送给自己的邮箱**；若产品带 PDF，确认附件与公开链接可打开。
 
 ---
 
@@ -509,6 +521,10 @@ journalctl -u zhirai-outreach -n 100 --no-pager
 | 日志中文乱码（Windows） | 控制台编码 | `chcp 65001`；或用 `logs/app.log` 查看 |
 | 备份下载 404 | 文件名不合法/不存在 | 只允许 `backups/` 下 `*.sqlite`；确认文件名 |
 | 邮件进入垃圾箱 | SPF/DKIM/DMARC 未配置、发信量突增 | 配置域名认证；降低发送量；检查内容与退订链接 |
+| 邮件里的产品 PDF 链接 404 | 文件已删除 / token 过期 / `PUBLIC_BASE_URL` 不对 / 反向代理未转发 `/api/v1/public/*` | 检查产品文件是否仍存在；重发草稿获取新链接；确认公网可访问 `PUBLIC_BASE_URL` |
+| 邮件发出但没有附件 | 附件文件缺失 / 单 >5 MB / 总 >8 MB / 类型不允许 | 发送任务结果含 `attachmentWarnings`；重新上传 PDF（≤5 MB）并重新生成草稿 |
+| 上传 PDF 报 422 | MIME 非 `application/pdf` 或 base64 非法/超 8 MB | 确认文件类型与大小；用浏览器重新上传 |
+| `uploads/` 占用过大 | 产品图片/PDF 累积 | 删除归档产品的文件；监控磁盘；备份时注意文件体积 |
 
 **查看日志**：
 
@@ -522,7 +538,7 @@ curl "http://127.0.0.1:4173/api/v1/ops/logs?lines=200" -H "Cookie: ..."
 
 ```bash
 curl -s http://127.0.0.1:4173/api/v1/health
-# {"ok":true,"data":{"status":"ok","version":"1.0.0","initialized":true,...}}
+# {"ok":true,"data":{"status":"ok","version":"<package.json 版本>","initialized":true,...}}
 ```
 
 ---
@@ -559,7 +575,7 @@ npm start
 
 # 3) 端到端安全验收：审批→Worker 发送、接管拦截、抑制拦截、公开退订（15 项检查）
 node scripts/verify-safety.mjs http://127.0.0.1:4173
-# 期望输出：Result: 15/15 passed
+# 期望输出：Result: 16/16 passed
 ```
 
 > `verify-safety.mjs` 会临时放宽发送窗口、审批并发送演示草稿、接管演示客户、添加/删除抑制记录、调用公开退订，并在结束时恢复发送窗口。**只应在演示/测试实例运行**，不要对客户生产数据执行。
@@ -607,7 +623,7 @@ node_modules/
 ```powershell
 $src = "C:\zhirai-stage\platform"
 $dist = "C:\zhirai-stage\dist"
-$out = Join-Path $dist "zhirai-europe-b2b-outreach-v1.0.0.zip"
+$out = Join-Path $dist "zhirai-europe-b2b-outreach-v1.1.0.zip"
 
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 if (Test-Path $out) { Remove-Item $out }
@@ -627,7 +643,7 @@ Remove-Item $tmp -Recurse -Force
 
 ```bash
 cd /opt/zhirai-outreach
-zip -r /tmp/zhirai-europe-b2b-outreach-v1.0.0.zip . \
+zip -r /tmp/zhirai-europe-b2b-outreach-v1.1.0.zip . \
   -x 'server/data/*' '.env' '*.key' '*.log' '.git/*' 'node_modules/*' '.verify/*'
 ```
 

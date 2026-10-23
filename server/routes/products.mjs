@@ -26,6 +26,7 @@ function productInput(body) {
     samples: asString(body.samples, { max: 500 }) || null,
     leadTime: asString(body.leadTime, { max: 200 }) || null,
     status: body.status ? asEnum(body.status, productsService.PRODUCT_STATUSES, { label: '产品状态' }) : undefined,
+    keywords: body.keywords === undefined ? undefined : asArray(body.keywords, { max: 200, label: '关键词' }).filter((item) => typeof item === 'string'),
   };
 }
 
@@ -53,7 +54,7 @@ export function mount(router) {
 
   router.post('/api/v1/products', async (ctx) => productsService.createProduct(ctx.workspace.id, productInput(ctx.body || {}), context(ctx)), WRITE);
 
-  router.get('/api/v1/products/:id', async (ctx) => productsService.getProductOrThrow(ctx.workspace.id, ctx.params.id), READ);
+  router.get('/api/v1/products/:id', async (ctx) => productsService.getProductDetail(ctx.workspace.id, ctx.params.id), READ);
 
   router.patch(
     '/api/v1/products/:id',
@@ -72,9 +73,19 @@ export function mount(router) {
         patch.certifications = asArray(body.certifications, { max: 100, label: '认证' }).filter((item) => typeof item === 'string');
       }
       if (body.status !== undefined) patch.status = asEnum(body.status, productsService.PRODUCT_STATUSES, { label: '产品状态' });
+      if (body.keywords !== undefined) {
+        patch.keywords = asArray(body.keywords, { max: 200, label: '关键词' }).filter((item) => typeof item === 'string');
+      }
       return productsService.updateProduct(ctx.workspace.id, ctx.params.id, patch, context(ctx));
     },
     WRITE,
+  );
+
+  router.post(
+    '/api/v1/products/:id/generate-keywords',
+    async (ctx) =>
+      productsService.generateProductKeywordsForProduct(ctx.workspace.id, ctx.params.id, context(ctx)),
+    { ...WRITE, rateLimit: { windowMs: 60_000, max: 20 } },
   );
 
   router.delete(

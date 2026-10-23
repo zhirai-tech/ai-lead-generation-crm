@@ -90,6 +90,14 @@ const META = [
     capabilities: ['review', 'quality'],
     inputFields: ['draft', 'claims', 'campaignStep', 'product', 'company', 'language'],
   },
+  {
+    role: 'keyword_research',
+    name: 'Keyword Research',
+    nameZh: '关键词研究',
+    description: '基于产品名称/分类/规格/应用/材料扩展英文 B2B 关键词、否定词与搜索式，不编造认证或客户。',
+    capabilities: ['research', 'keywords', 'seo'],
+    inputFields: ['product', 'icp'],
+  },
 ];
 
 for (const entry of META) {

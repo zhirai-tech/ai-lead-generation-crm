@@ -279,6 +279,16 @@
   line-height: 1.2;
 }
 
+/* Keep the avatar inside the compact 32px chip (the page-level avatar is 42px). */
+.user-chip .detail-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  flex: none;
+}
+
 .user-chip .meta b {
   font-size: var(--fs-12);
   font-weight: 600;

@@ -1,6 +1,6 @@
 # 验证报告（VERIFICATION）
 
-> 版本：v1.0.0 · 验证日期：2026-10-22 · 执行人：ZHIRAI 开发 Lead
+> 版本：v1.1.0 · 验证日期：2026-10-23 · 执行人：ZHIRAI 开发 Lead
 > 本报告只记录**实际执行过**的验证；未执行的项目明确标注为「未验证」。截图见项目根目录 `.verify/real-user/`。
 
 ## 1. 验证环境
@@ -25,15 +25,17 @@ node --test --test-force-exit "tests/**/*.test.mjs"
 结果（最终一次）：
 
 ```
-tests 274 · pass 273 · fail 0 · skipped 1 · duration ≈ 3.5s
+tests 309 · pass 308 · fail 0 · skipped 1 · duration ≈ 3.7s
 ```
+
+> v1.1 新增：产品媒体/公开 PDF token/关键词生成/草稿附件/MIME 附件/发送附件快照共 35 项测试；Agent 角色 10 → 11。
 
 覆盖范围（由各模块负责人编写，Lead 复跑）：
 
 - 核心：认证、会话、CSRF、权限矩阵、限流、加解密（scrypt / AES-256-GCM / HMAC token）、事务回滚、租户隔离、设置。
 - 数据域：企业/联系人/产品/ICP CRUD、邮箱推断永不标 valid、MX 校验三类结果、规则评分与排除、CSV 解析/导入/导出、发现执行与去重、权限。
 - 触达域：草稿审批状态机、活动 enroll 去重与抑制跳过、接管原子性/任务取消/审计、DO_NOT_CONTACT 不能直接 resume、商机阶段、抑制权限、邮箱凭据不回明文、仪表盘。
-- Agent 层：10 角色 simulation 输出 schema 合法性、非法输出拒绝与重试、预算超限、执行与用量落库、租户隔离、密钥不外泄。
+- Agent 层：11 角色 simulation 输出 schema 合法性、非法输出拒绝与重试、预算超限、执行与用量落库、租户隔离、密钥不外泄；keyword_research 关键词扩展与 productFiles 链接注入。
 - 任务/邮件：队列原子领取/去重/退避/dead/cancel、12 类 handler、发送管线 21 项拦截（未审批、抑制、四种接管状态、窗口、限额、重复、熔断）、MIME 中文编码/CRLF 注入/退订头、SMTP/IMAP 协议模拟（本地 TCP 测试服务器）。
 
 跳过 1 项为条件性用例（Agent 层交付后 `AGENT_UNAVAILABLE` 回退分支不可触发）。
@@ -41,7 +43,7 @@ tests 274 · pass 273 · fail 0 · skipped 1 · duration ≈ 3.5s
 ## 3. 安全检查（真实 HTTP）
 
 脚本：`node scripts/verify-safety.mjs http://127.0.0.1:4173`
-针对 seeded demo 工作空间，结果 **15/15 通过**：
+针对 seeded demo 工作空间，结果 **15/15 通过**（v1.1 产品媒体/PDF 附件 E2E 另见 §8，**16/16 通过**）：
 
 - 管理员登录；发送时间窗临时放宽（验证后恢复）。
 - 已批准草稿进入队列 → Worker（真实后台任务）发送成功 → 草稿 `sent` + 生成 `email_messages` + 用量/审计。
@@ -75,7 +77,7 @@ tests 274 · pass 273 · fail 0 · skipped 1 · duration ≈ 3.5s
 | 统一收件箱 | ✅ | — | — | 会话列表、消息、AI 分类建议、人工修正、回复 |
 | 销售管道 | ✅ | — | — | 6 阶段看板（含 lost）、卡片、活动、跟进任务 |
 | 自动化与接管 | ✅ | — | — | 状态表、DNC 恢复禁用、抑制名单 Tab |
-| 智能代理 | ✅ | — | — | Provider 状态、10 角色、执行记录 |
+| 智能代理 | ✅ | — | — | Provider 状态、11 角色、执行记录 |
 | 任务队列 | ✅ | — | — | 统计、筛选、详情、暂停/恢复 |
 | 系统设置 | ✅ | — | — | 11 分组、成员新增/移除实测、设置保存 |
 | 系统维护台 `/admin` | ✅ | — | — | 系统信息、备份创建（生成 716KB 备份文件）、日志、许可证 |
@@ -112,3 +114,23 @@ tests 274 · pass 273 · fail 0 · skipped 1 · duration ≈ 3.5s
 ## 7. 结论
 
 核心业务闭环（发现 → 评分 → 活动 → 草稿 → 审批 → 发送 → 回复/接管 → CRM）已在真实浏览器与真实 HTTP/Worker 链路中跑通；发送安全与租户隔离有自动化测试和独立安全脚本双重证据。真实外部邮件/模型服务、法律合规与规模化性能仍需在商业发布前完成对应验证。
+
+## 8. v1.1 产品媒体 / AI 关键词 / PDF 附件验证（2026-10-23）
+
+脚本：`node e2e-media.mjs`（临时验证脚本，位于开发暂存区，不随发行包），对运行中的交付副本执行，**16/16 通过**：
+
+- 产品图片上传（PNG ≤8MB）与 PDF 上传；产品接口返回 `files[] / mainImageUrl / keywords[]`；
+- 未登录访问公开签名 PDF 链接 → 200 `application/pdf`，字节数与源文件一致；
+- `POST /products/:id/generate-keywords` → 30 个关键词落库，provider=simulation，execution/usage 记录；
+- 选择产品 + 活动步骤生成草稿：`attachments` 包含 PDF，正文含**绝对**公开链接（`http://…/api/v1/public/product-files/…`）；
+- 审批 → 入队 → Worker 发送成功；`email_messages.attachments_json` 写入附件快照；模拟邮箱 `.eml` 为 `multipart/mixed`（内层 alternative + PDF 附件），附件链接位于退订段之前；
+- 重复收件人/重复主题 24h 去重拦截在测试中真实触发，改用唯一主题后正常发送；
+- 浏览器实测：产品卡片主图/关键词数/PDF 数、编辑弹窗上传/主图/删除（确认框生效）、复制公开链接、AI 关键词生成；发现页选产品自动带出关键词、全选欧洲/随机 8 国/清空、0 国=全部市场；草稿抽屉显示「邮件附件」卡（打开/复制链接、正文含 PDF 链接）。
+- 截图：`.verify/real-user/21-products-media.png`、`22-product-edit-media.png`、`23-discovery-v11.png`、`24-draft-attachment.png`。
+
+**尚未验证的真实环境项**（与 v1.0 相同，且对附件更敏感）：
+
+- 真实外部 SMTP 发送 PDF 附件（服务商大小限制、收件方 PDF 安全策略）——建议先用真实邮箱各发一封 1MB 内 PDF；
+- 公开 PDF 链接的长期可用性/吊销策略（当前为 180 天签名，删除文件后链接失效）；如需“可撤销分享”，后续增加手动吊销；
+- 公开链接持有者无需登录即可查看 PDF，请勿上传含敏感信息的目录；正式发送前需人工确认附件内容；
+- 真实 AI 生成关键词质量（当前为离线 simulation；真实模型需配置 API Key 后评估）。

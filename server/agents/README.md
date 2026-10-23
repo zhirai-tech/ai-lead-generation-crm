@@ -8,8 +8,8 @@
 server/agents/
   index.mjs              # 对外唯一入口（其他模块只 import 这里）
   catalog.mjs            # AGENT_CATALOG 元数据（浏览器安全）
-  roles.mjs              # 角色白名单（10 个）
-  schemas.mjs            # 10 个角色的输出 JSON Schema
+  roles.mjs              # 角色白名单（11 个）
+  schemas.mjs            # 11 个角色的输出 JSON Schema
   schema.mjs             # 轻量校验器 + JSON 解析（剥离 ```json 围栏）
   simulation.mjs         # 离线确定性模拟输出（按角色构造，纯函数）
   runner.mjs             # runAgent：提示词拼装/调用/重试/记账/审计
@@ -28,6 +28,7 @@ import {
   AGENT_CATALOG, runAgent, testProvider,
   generateOutreachDraft, qualifyCompany, classifyReply, planFollowUp,
   companyResearch, matchProduct, complianceCheck, reviewQuality,
+  generateProductKeywords,
 } from '../agents/index.mjs';
 
 await runAgent({ workspaceId, role, input, actorType, actorId, jobId, createdBy });
@@ -48,6 +49,7 @@ await runAgent({ workspaceId, role, input, actorType, actorId, jobId, createdBy 
 | `matchProduct` | `product_matching` |
 | `complianceCheck` | `compliance_guard` |
 | `reviewQuality` | `quality_review` |
+| `generateProductKeywords` | `keyword_research`（v1.1，入参为 `{ workspaceId, product }`） |
 
 `runAgent` 的输入：`input` 必须是对象且 ≤ 64KB；模型输出必须通过角色 schema 校验
 （≤ 120KB），失败时带加强提示重试 1 次，仍失败抛 `AppError('AGENT_INVALID_OUTPUT')`。

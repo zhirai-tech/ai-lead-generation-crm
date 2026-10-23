@@ -76,6 +76,12 @@ const ACTION_TITLES = {
   'import.companies': '导入企业数据',
   'suppression.create': '添加禁止联系记录',
   'suppression.unsubscribe': '客户主动退订',
+  'product.file_upload': '上传产品资料',
+  'product.file_delete': '删除产品资料',
+  'product.file_main': '设置产品主图',
+  'product.keywords_generate': 'AI 生成产品关键词',
+  'product.create': '新增产品',
+  'product.update': '更新产品资料',
 };
 
 const NOISY_EVENT = /^(auth\.login|auth\.logout|settings\.update|reply\.classify|email\.sync|maintenance|queue\.|job\.|campaign\.tick|draft\.(generate|create)|agent\.execution)/;

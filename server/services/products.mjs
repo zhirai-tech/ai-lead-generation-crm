@@ -10,8 +10,12 @@ import { nowIso } from '../core/time.mjs';
 import { recordAudit } from '../core/audit.mjs';
 import { id } from '../core/ids.mjs';
 import * as productsRepo from '../repositories/products.mjs';
+import { getSetting } from './settings.mjs';
+import { agentUnavailable, decorateProduct, decorateProducts } from './product-files.mjs';
 
 export const PRODUCT_STATUSES = ['active', 'draft', 'archived'];
+export const MAX_KEYWORDS = 30;
+export const MAX_KEYWORD_LENGTH = 80;
 
 const TEXT_FIELDS = [
   ['name', 'name', 200],
@@ -41,14 +45,42 @@ function objectValue(value, label) {
   return value;
 }
 
+/**
+ * Normalise keyword arrays: trim, collapse whitespace, truncate, dedupe
+ * case-insensitively and cap the count.
+ */
+export function normalizeKeywords(value, { max = MAX_KEYWORDS, itemMax = MAX_KEYWORD_LENGTH } = {}) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw validationError('关键词必须是数组');
+  const seen = new Set();
+  const keywords = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const keyword = item.trim().replace(/\s+/g, ' ').slice(0, itemMax);
+    if (!keyword) continue;
+    const key = keyword.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    keywords.push(keyword);
+    if (keywords.length >= max) break;
+  }
+  return keywords;
+}
+
 export function listProducts(workspaceId, filters, sort) {
-  return productsRepo.listProducts(workspaceId, { ...filters, sortKey: sort?.key, sortDirection: sort?.direction });
+  const result = productsRepo.listProducts(workspaceId, { ...filters, sortKey: sort?.key, sortDirection: sort?.direction });
+  return { ...result, items: decorateProducts(workspaceId, result.items) };
 }
 
 export function getProductOrThrow(workspaceId, productId) {
   const product = productsRepo.findProduct(workspaceId, productId);
   if (!product) throw notFound('产品不存在');
   return product;
+}
+
+/** Product detail with `files` / `mainImageUrl` (used by the HTTP layer). */
+export function getProductDetail(workspaceId, productId) {
+  return decorateProduct(workspaceId, getProductOrThrow(workspaceId, productId));
 }
 
 export function createProduct(workspaceId, input, context = {}) {
@@ -72,6 +104,8 @@ export function createProduct(workspaceId, input, context = {}) {
     samples: input.samples ? String(input.samples).slice(0, 500) : null,
     lead_time: input.leadTime ? String(input.leadTime).slice(0, 200) : null,
     status: PRODUCT_STATUSES.includes(input.status) ? input.status : 'active',
+    keywords_json: JSON.stringify(normalizeKeywords(input.keywords)),
+    main_image_file_id: null,
     created_by: context.actorId || null,
     created_at: now,
     updated_at: now,
@@ -88,7 +122,7 @@ export function createProduct(workspaceId, input, context = {}) {
     userAgent: context.userAgent,
     requestId: context.requestId,
   });
-  return product;
+  return decorateProduct(workspaceId, product);
 }
 
 export function updateProduct(workspaceId, productId, patch, context = {}) {
@@ -110,6 +144,7 @@ export function updateProduct(workspaceId, productId, patch, context = {}) {
     if (!PRODUCT_STATUSES.includes(patch.status)) throw validationError('产品状态不在允许范围内');
     changes.status = patch.status;
   }
+  if (patch.keywords !== undefined) changes.keywords_json = JSON.stringify(normalizeKeywords(patch.keywords));
   changes.updated_at = nowIso();
   const product = productsRepo.updateProduct(workspaceId, productId, changes);
   recordAudit({
@@ -125,7 +160,7 @@ export function updateProduct(workspaceId, productId, patch, context = {}) {
     userAgent: context.userAgent,
     requestId: context.requestId,
   });
-  return product;
+  return decorateProduct(workspaceId, product);
 }
 
 export function deleteProduct(workspaceId, productId, context = {}) {
@@ -243,4 +278,70 @@ export function matchProductRules(product, company) {
 
 export function listActiveProducts(workspaceId) {
   return productsRepo.listActiveProducts(workspaceId);
+}
+
+// ------------------------------------------------------- AI keyword research
+/**
+ * Generate English B2B discovery keywords for a product via the t-agents
+ * `keyword_research` role, then persist them on the product.
+ *
+ * Never fabricates keywords: when the agent module/role is unavailable or the
+ * output is unusable, a 503 AGENT_UNAVAILABLE is thrown and nothing is saved.
+ */
+export async function generateProductKeywordsForProduct(workspaceId, productId, context = {}) {
+  const product = getProductOrThrow(workspaceId, productId);
+  let agentModule = null;
+  try {
+    agentModule = await import('../agents/index.mjs');
+  } catch (error) {
+    throw agentUnavailable(error && error.message);
+  }
+  const generate = agentModule.generateProductKeywords;
+  if (typeof generate !== 'function') throw agentUnavailable('generateProductKeywords is not exported');
+  let output = null;
+  try {
+    output = await generate({
+      workspaceId,
+      product,
+      actorType: context.actorId ? 'user' : 'system',
+      actorId: context.actorId || null,
+      createdBy: context.actorId || null,
+    });
+  } catch (error) {
+    throw agentUnavailable(error && error.message);
+  }
+  if (!output || typeof output !== 'object' || !Array.isArray(output.keywords)) {
+    throw agentUnavailable('keyword agent returned an unexpected payload');
+  }
+  const keywords = normalizeKeywords(output.keywords);
+  if (!keywords.length) throw agentUnavailable('keyword agent returned no keywords');
+  const negativeKeywords = normalizeKeywords(output.negativeKeywords, { max: 15 });
+  const searchQueries = Array.isArray(output.searchQueries)
+    ? output.searchQueries
+        .filter((item) => typeof item === 'string' && item.trim())
+        .map((item) => item.trim().slice(0, 200))
+        .slice(0, 10)
+    : [];
+  const notes = typeof output.notes === 'string' ? output.notes.slice(0, 1000) : '';
+  const aiSettings = getSetting(workspaceId, 'ai');
+  const provider = (typeof output.provider === 'string' && output.provider) || aiSettings.provider || null;
+
+  productsRepo.updateProduct(workspaceId, productId, {
+    keywords_json: JSON.stringify(keywords),
+    updated_at: nowIso(),
+  });
+  recordAudit({
+    workspaceId,
+    actorType: context.actorId ? 'user' : 'system',
+    actorId: context.actorId || null,
+    action: 'product.keywords_generate',
+    entityType: 'product',
+    entityId: productId,
+    before: { keywords: product.keywords || [] },
+    after: { keywords, negativeKeywords, provider },
+    ip: context.ip,
+    userAgent: context.userAgent,
+    requestId: context.requestId,
+  });
+  return { keywords, negativeKeywords, notes, searchQueries, provider };
 }

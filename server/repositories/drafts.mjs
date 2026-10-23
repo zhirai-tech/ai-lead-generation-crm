@@ -5,7 +5,7 @@
  * drafts / approvals UI needs. All statements are scoped by workspace_id.
  */
 import { all, get, run } from '../core/db.mjs';
-import { jsonObject, paged } from './helpers.mjs';
+import { jsonArray, jsonObject, paged } from './helpers.mjs';
 
 function placeholders(count) {
   return Array.from({ length: count }, () => '?').join(', ');
@@ -45,6 +45,7 @@ export function mapDraft(row) {
     generatedBy: row.generated_by,
     quality: jsonObject(row.quality_json),
     guard: jsonObject(row.guard_json),
+    attachments: jsonArray(row.attachments_json),
     approvedBy: row.approved_by,
     approvedAt: row.approved_at,
     scheduledAt: row.scheduled_at,
@@ -134,9 +135,9 @@ export function createDraft(workspaceId, data) {
   run(
     `INSERT INTO message_drafts
       (id, workspace_id, company_id, contact_id, campaign_id, campaign_step_id, account_id, subject, body_text,
-       language, status, generated_by, quality_json, guard_json, approved_by, approved_at, scheduled_at,
+       language, status, generated_by, quality_json, guard_json, attachments_json, approved_by, approved_at, scheduled_at,
        sent_message_id, rejection_reason, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.id,
       workspaceId,
@@ -152,6 +153,7 @@ export function createDraft(workspaceId, data) {
       data.generatedBy ?? null,
       JSON.stringify(data.quality || {}),
       JSON.stringify(data.guard || {}),
+      JSON.stringify(data.attachments || []),
       data.approvedBy ?? null,
       data.approvedAt ?? null,
       data.scheduledAt ?? null,
@@ -172,6 +174,7 @@ const DRAFT_UPDATE_COLUMNS = {
   generatedBy: 'generated_by',
   quality: 'quality_json',
   guard: 'guard_json',
+  attachments: 'attachments_json',
   approvedBy: 'approved_by',
   approvedAt: 'approved_at',
   scheduledAt: 'scheduled_at',
@@ -188,6 +191,7 @@ export function updateDraft(workspaceId, draftId, patch) {
     if (patch[key] === undefined) continue;
     sets.push(`${column} = ?`);
     if (key === 'quality' || key === 'guard') params.push(JSON.stringify(patch[key] || {}));
+    else if (key === 'attachments') params.push(JSON.stringify(Array.isArray(patch[key]) ? patch[key] : []));
     else params.push(patch[key]);
   }
   if (!sets.length) return getDraft(workspaceId, draftId);

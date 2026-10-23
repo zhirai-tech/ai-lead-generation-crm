@@ -36,7 +36,7 @@ import { EU_COUNTRIES, splitList, typeLabel } from './companies.js';
 
 export const meta = {
   title: '企业发现',
-  help: '按产品、ICP、目标国家与关键词搜索潜在买家。每个结果都会记录数据来源、获取时间与置信度；内置模拟数据源仅用于演示流程，不代表真实企业。',
+  help: '按产品、ICP、目标国家与关键词搜索潜在买家。关键词可由产品资料自动带出或 AI 生成；不选国家表示全部市场。每个结果都会记录数据来源、获取时间与置信度；内置模拟数据源仅用于演示流程，不代表真实企业。',
 };
 
 const RUN_STATUS_MAP = {
@@ -125,6 +125,7 @@ function querySummary(query) {
   const parts = [];
   if (keywords.length) parts.push(keywords.slice(0, 4).join('、'));
   if (countries.length) parts.push(countries.slice(0, 4).join('、'));
+  else parts.push('全部市场');
   if (query.industry) parts.push(query.industry);
   return parts.filter(Boolean).join(' · ') || '未设置条件';
 }
@@ -151,6 +152,7 @@ export async function render(root, params, ctx) {
     provider: '',
     total: 0,
     page: 1,
+    keywordsCache: new Map(),
   };
   const refs = {};
 
@@ -158,6 +160,7 @@ export async function render(root, params, ctx) {
   const runsHost = el('div', 'stack');
   const runsPagerHost = el('div', '');
   const writable = can('discovery.run');
+  const canWriteData = can('data.write');
 
   // ------------------------------------------------------- reference data
   const PROVIDER_PREFERENCE = ['simulation', 'search_api', 'csv'];
@@ -247,14 +250,128 @@ export async function render(root, params, ctx) {
       });
       refs.countryHost.appendChild(chip);
     }
-    if (refs.countryCount) refs.countryCount.textContent = `已选 ${state.countries.size} 个`;
+    const count = state.countries.size;
+    if (refs.countryCount) {
+      refs.countryCount.textContent = count ? `已选 ${count} 个国家` : '未选择国家';
+    }
+    if (refs.countryAllBadge) refs.countryAllBadge.classList.toggle('hidden', count > 0);
+  }
+
+  function selectAllCountries() {
+    state.countries = new Set(EU_COUNTRIES);
+    renderCountryChips();
+  }
+
+  function randomCountries() {
+    const pool = [...EU_COUNTRIES];
+    const picked = new Set();
+    while (picked.size < 8 && pool.length) {
+      const index = Math.floor(Math.random() * pool.length);
+      picked.add(pool.splice(index, 1)[0]);
+    }
+    state.countries = picked;
+    renderCountryChips();
+  }
+
+  function clearCountries() {
+    state.countries = new Set();
+    renderCountryChips();
+  }
+
+  /** Fill the keyword box from the selected product when it is still empty. */
+  async function applyProductKeywords(productId, { force = false } = {}) {
+    if (!refs.keywords || !productId) return;
+    const current = String(refs.keywords.value || '').trim();
+    if (current && !force) return;
+    const product = state.products.find((item) => item.id === productId) || null;
+    let keywords = null;
+    if (product && Array.isArray(product.keywords)) {
+      keywords = product.keywords;
+    } else if (state.keywordsCache.has(productId)) {
+      keywords = state.keywordsCache.get(productId);
+    } else {
+      try {
+        const detail = await api.get(`/api/v1/products/${encodeURIComponent(productId)}`);
+        keywords = safeArray(detail && detail.keywords);
+      } catch {
+        keywords = [];
+      }
+      state.keywordsCache.set(productId, keywords);
+    }
+    if (Array.isArray(keywords) && keywords.length && refs.keywords && !String(refs.keywords.value || '').trim()) {
+      refs.keywords.value = keywords.join(', ');
+    }
+  }
+
+  function renderKeywordNotes(result) {
+    if (!refs.keywordNoteHost) return;
+    clear(refs.keywordNoteHost);
+    const negativeKeywords = safeArray(result && result.negativeKeywords);
+    const notes = (result && result.notes) || '仅基于产品已填资料扩展关键词';
+    const parts = [`AI 说明：${notes}`];
+    if (negativeKeywords.length) parts.push(`建议排除词：${negativeKeywords.slice(0, 12).join('、')}`);
+    refs.keywordNoteHost.appendChild(helpTip(parts.join('；')));
+  }
+
+  async function generateKeywords() {
+    const productId = refs.product ? refs.product.value : '';
+    if (!productId) {
+      toast('请先选择产品', 'warning');
+      return;
+    }
+    if (!canWriteData) {
+      toast('当前角色没有生成关键词的权限', 'warning');
+      return;
+    }
+    if (!refs.aiKeywordsBtn || refs.aiKeywordsBtn.disabled) return;
+    refs.aiKeywordsBtn.disabled = true;
+    if (refs.aiKeywordsLabel) refs.aiKeywordsLabel.textContent = '生成中…';
+    try {
+      const result = await api.post(
+        `/api/v1/products/${encodeURIComponent(productId)}/generate-keywords`,
+        {},
+      );
+      const keywords = safeArray(result && result.keywords)
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .slice(0, 30);
+      if (!keywords.length) {
+        toast('AI 未返回可用关键词，请稍后重试', 'warning');
+        return;
+      }
+      refs.keywords.value = keywords.join(', ');
+      toast(`已生成 ${keywords.length} 个关键词`, 'success');
+      renderKeywordNotes(result);
+    } catch (error) {
+      toast(errorMessage(error), 'error');
+    } finally {
+      if (refs.aiKeywordsBtn) refs.aiKeywordsBtn.disabled = false;
+      if (refs.aiKeywordsLabel) refs.aiKeywordsLabel.textContent = 'AI 生成关键词';
+    }
+  }
+
+  function buildCountryActions() {
+    const actions = el('div', 'page-country-actions');
+    append(actions, [
+      button('全选欧洲', { size: 'sm', variant: 'ghost', onClick: selectAllCountries }),
+      button('随机 8 国', { size: 'sm', variant: 'ghost', onClick: randomCountries }),
+      button('清空', { size: 'sm', variant: 'ghost', onClick: clearCountries }),
+    ]);
+    return actions;
   }
 
   function buildForm() {
     if (disposed) return;
     clear(formHost);
 
-    refs.product = select({ value: '', options: [], placeholder: '请选择产品' });
+    refs.product = select({
+      value: '',
+      options: [],
+      placeholder: '请选择产品',
+      onChange: (value) => {
+        void applyProductKeywords(value);
+      },
+    });
     fillSelect(
       refs.product,
       state.products.map((product) => ({
@@ -275,8 +392,24 @@ export async function render(root, params, ctx) {
       rows: 2,
       placeholder: '例如：brake pads, aftermarket, distributor（逗号或换行分隔）',
     });
+    refs.aiKeywordsLabel = el('span', '', 'AI 生成关键词');
+    refs.aiKeywordsBtn = button(null, {
+      size: 'sm',
+      variant: 'outline',
+      iconName: 'sparkles',
+      disabled: !canWriteData || !state.products.length,
+      title: '基于产品资料生成关键词',
+      onClick: generateKeywords,
+    });
+    refs.aiKeywordsBtn.appendChild(refs.aiKeywordsLabel);
+    refs.keywordNoteHost = el('span', 'row');
+    const keywordActions = el('div', 'page-keyword-actions');
+    append(keywordActions, [refs.aiKeywordsBtn, refs.keywordNoteHost]);
+    const keywordWrap = el('div', 'page-keyword-field');
+    append(keywordWrap, [refs.keywords, keywordActions]);
     refs.countryHost = el('div', 'page-chip-group');
-    refs.countryCount = el('span', 'muted', '已选 0 个');
+    refs.countryCount = el('span', 'muted', '未选择国家');
+    refs.countryAllBadge = badge('全部市场', 'yellow');
     refs.providerHost = el('div', 'page-provider-list');
     refs.maxResults = select({
       value: '25',
@@ -294,23 +427,30 @@ export async function render(root, params, ctx) {
     refs.csvField.classList.add('span-2', 'hidden');
 
     const countryField = field('目标国家', refs.countryHost, {
-      help: '可多选。未选择时按数据源默认市场处理（模拟数据源默认覆盖主要欧洲市场）。',
+      help: '可多选；不选任何国家表示「全部市场」（由数据源覆盖范围决定）。可用「全选欧洲 / 随机 8 国 / 清空」快速调整。',
     });
+    const countryMeta = el('div', 'page-chip-meta');
+    append(countryMeta, [refs.countryCount, refs.countryAllBadge, el('span', 'grow'), buildCountryActions()]);
     const countryWrap = el('div', 'span-2');
-    append(countryWrap, [countryField, el('div', 'page-chip-meta', [refs.countryCount])]);
+    append(countryWrap, [countryField, countryMeta]);
 
     const providerField = field('数据源', refs.providerHost, {
       help: '数据源决定企业来源与成本。内置模拟数据源仅用于演示流程，不代表真实企业；禁用项需先在「系统设置 → 数据源」启用并配置凭据。',
     });
     providerField.classList.add('span-2');
 
+    const keywordField = field('关键词', keywordWrap, {
+      help: '逗号或换行分隔，最多 20 个；选择产品后会自动带出已保存的关键词（若为空），也可用 AI 生成后核对。',
+    });
+    keywordField.classList.add('span-2');
+
     const form = el('div', 'form-grid');
     append(form, [
       field('产品', refs.product, { required: true, help: '发现结果会按产品类目与 ICP 规则匹配与评分。' }),
       field('ICP（可选）', refs.icp, { help: '选择 ICP 后，企业类型、目标国家与关键词会作为发现条件。' }),
-      field('关键词', refs.keywords, { help: '逗号或换行分隔，最多 20 个；用于数据源检索。' }),
       field('最大结果数', refs.maxResults),
       countryWrap,
+      keywordField,
       providerField,
       refs.csvField,
     ]);
@@ -356,6 +496,7 @@ export async function render(root, params, ctx) {
     renderCountryChips();
     renderProviders();
     updateCsvField();
+    void applyProductKeywords(refs.product.value);
   }
 
   async function submit() {
@@ -370,10 +511,6 @@ export async function render(root, params, ctx) {
     const productId = refs.product ? refs.product.value : '';
     if (!productId) {
       toast('请选择产品', 'warning');
-      return;
-    }
-    if (!state.countries.size) {
-      toast('请至少选择一个目标国家', 'warning');
       return;
     }
     const maxResults = Number(refs.maxResults.value) || 25;
@@ -577,7 +714,7 @@ export async function render(root, params, ctx) {
         { label: '新增企业', value: formatNumber(detail.companiesCreated ?? 0) },
         {
           label: '目标国家',
-          value: safeArray(query.countries).map((code) => countryName(code) || code).join('、') || '—',
+          value: safeArray(query.countries).map((code) => countryName(code) || code).join('、') || '全部市场',
         },
         { label: '关键词', value: safeArray(query.keywords).join('、') || '—' },
         { label: '结果上限', value: query.limit ? `${formatNumber(query.limit)} 家` : '—' },
@@ -676,7 +813,14 @@ export async function render(root, params, ctx) {
       api.get('/api/v1/discovery/providers'),
     ]);
     if (disposed) return;
-    if (productsResult.status === 'fulfilled') state.products = unwrapList(productsResult.value).items;
+    if (productsResult.status === 'fulfilled') {
+      state.products = unwrapList(productsResult.value).items;
+      for (const product of state.products) {
+        if (product && product.id && Array.isArray(product.keywords)) {
+          state.keywordsCache.set(product.id, product.keywords);
+        }
+      }
+    }
     if (icpsResult.status === 'fulfilled') state.icps = unwrapList(icpsResult.value).items;
     const providers = providersResult.status === 'fulfilled' ? unwrapList(providersResult.value).items : [];
     let usedFallback = false;

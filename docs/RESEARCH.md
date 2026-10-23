@@ -1,7 +1,7 @@
 # 开源项目研究报告（Open-Source Reference Research）
 
 > 项目：ZHIRAI Europe B2B AI Outreach Platform（智睿欧洲 B2B AI 外贸获客平台）
-> 作者：ZHIRAI · 智睿科技 · 独立开发者 ｜ 版本 v1.0.0
+> 作者：ZHIRAI · 智睿科技 · 独立开发者 ｜ 版本 v1.1.0
 > 本文是**研究记录**，不是代码来源。本项目**未复制任何参考项目的源码、文案、素材或品牌**。
 > 核验日期：**2026-10-22**（通过 GitHub REST API 读取仓库默认分支 LICENSE 与仓库元数据；未逐文件、未逐依赖、未运行任何参考项目）。
 
@@ -180,7 +180,7 @@
 | 值得借鉴 | ① 公司/联系人/商机/活动四张主表 + 自定义字段扩展的建模思路；② 权限粒度（对象级 + 字段级）的取舍；③ "可扩展对象"的代价（schema 演进复杂、查询成本上升）——本项目选择**显式表 + JSON 扩展列**，不做通用 EAV |
 | 外部付费依赖 | 【公开资料】其托管版与企业版为付费产品；自托管本体不强制付费 |
 | 商标/数据限制 | "Twenty" 名称与 logo 受商标保护，其 LICENSE 明确不授予商标权；不得使用其品牌 |
-| 本项目落地方式 | 参考 CRM 实体关系，但本项目 ER 由 `001_init.sql` 独立设计（40 张表，见 [DATA-MODEL.md](./DATA-MODEL.md)）。**未复制任何代码、schema 或界面** |
+| 本项目落地方式 | 参考 CRM 实体关系，但本项目 ER 由 `001_init.sql` + `002_product_media_attachments.sql` 独立设计（40 张业务表，见 [DATA-MODEL.md](./DATA-MODEL.md)）。**未复制任何代码、schema 或界面** |
 
 ### 4.7 Mautic（mautic/mautic）
 
@@ -242,7 +242,7 @@
 
 | # | 借鉴点 | 来源 | 本项目落地 | 对应文件 |
 | --- | --- | --- | --- | --- |
-| 1 | Agent 按职责拆分，避免单一巨型提示词 | AgentSDR、方案 §6 | 10 个角色 Agent，服务端提示词文件化，统一 `runAgent()` 入口 | `server/agents/**`（t-agents） |
+| 1 | Agent 按职责拆分，避免单一巨型提示词 | AgentSDR、方案 §6 | 11 个角色 Agent（含 `keyword_research`），服务端提示词文件化，统一 `runAgent()` 入口 | `server/agents/**` |
 | 2 | 每条推荐必须给理由 | OpenOutreach | `lead_scores.factors_json` + `explanation`；`company_product_matches.reasons_json` | `server/services/scoring.mjs` |
 | 3 | 阶段化数据流水线、可重试 | Quick-Enrich-Tools | `discovery_runs` + `background_jobs` 任务类型 | `server/jobs/**` |
 | 4 | 分级数据源、命中即停、成本上限 | OpenEnrich | `settings.enrichment` 上限 + `usage_records.cost_estimate` | `server/services/settings.mjs` |

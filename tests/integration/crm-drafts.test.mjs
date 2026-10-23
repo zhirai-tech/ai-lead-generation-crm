@@ -4,9 +4,13 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createTestContext } from '../helpers.mjs';
-import { seedCompany, seedContact } from '../unit/crm-fixtures.mjs';
+import { seedCompany, seedContact, seedProduct } from '../unit/crm-fixtures.mjs';
 import { setAgentImplementation, resetAgentImplementations } from '../../server/services/agent-client.mjs';
+import { setProductFilesLoaderForTests, resetProductFilesLoaderForTests, MAX_DRAFT_ATTACHMENTS } from '../../server/services/drafts.mjs';
+import { get, run } from '../../server/core/db.mjs';
 
 const DRAFT_BODY = 'Dear Anna, we supply aluminium battery pack brackets for EV platforms.';
 
@@ -16,6 +20,24 @@ async function createDraft(ctx, company, contact, extra = {}) {
   });
   assert.equal(response.status, 200, response.text);
   return response.body.data;
+}
+
+/** Create a campaign pinned to a product so the draft resolves a product. */
+async function createProductCampaign(ctx, productId, name = '附件活动') {
+  const campaign = await ctx.request('POST', '/api/v1/campaigns', { body: { name, productId } });
+  assert.equal(campaign.status, 200, campaign.text);
+  return campaign.body.data;
+}
+
+function pdfFile(index, overrides = {}) {
+  return {
+    productFileId: `prf_pdf_${index}`,
+    filename: `catalogue-${index}.pdf`,
+    mimeType: 'application/pdf',
+    sizeBytes: 1000 + index,
+    publicUrl: `/api/v1/public/product-files/token-${index}`,
+    ...overrides,
+  };
 }
 
 test('drafts: generation persists validated agent output and requires approval', async (t) => {
@@ -175,6 +197,214 @@ test('drafts: AI layer unavailable yields a clear 503 instead of crashing', asyn
   assert.equal(generated.body.error.code, 'AGENT_UNAVAILABLE');
 });
 
+test('drafts: generation attaches up to 3 product PDFs and exposes them', async (t) => {
+  const ctx = await createTestContext();
+  t.after(async () => {
+    resetAgentImplementations();
+    resetProductFilesLoaderForTests();
+    await ctx.close();
+  });
+  const workspaceId = ctx.owner.workspaceId;
+  const company = seedCompany({ workspaceId });
+  const contact = seedContact({ workspaceId, companyId: company.id });
+  const product = seedProduct({ workspaceId });
+  const campaign = await createProductCampaign(ctx, product.id);
+  const draft = await createDraft(ctx, company, contact, { campaignId: campaign.id });
+
+  const loaderCalls = [];
+  setProductFilesLoaderForTests((wsId, productId) => {
+    loaderCalls.push({ wsId, productId });
+    return [
+      pdfFile(1),
+      pdfFile(2),
+      { productFileId: 'prf_img', filename: 'product.png', mimeType: 'image/png', sizeBytes: 999, publicUrl: '/api/v1/public/product-files/img' },
+      pdfFile(3),
+      pdfFile(4),
+      { productFileId: 'prf_broken', filename: 'no-url.pdf', mimeType: 'application/pdf', sizeBytes: 10, publicUrl: '' },
+    ];
+  });
+  const agentCalls = [];
+  setAgentImplementation('generateOutreachDraft', async (args) => {
+    agentCalls.push(args);
+    return {
+      subject: 'Battery brackets with catalogue',
+      bodyText: 'Dear Anna, please find our catalogue links in this email. Best regards.',
+      language: 'en',
+      claims: [{ text: 'catalogue', source: 'product_files' }],
+      riskNotes: [],
+    };
+  });
+
+  const generated = await ctx.request('POST', `/api/v1/drafts/${draft.id}/generate`, { body: {} });
+  assert.equal(generated.status, 200, generated.text);
+  const attachments = generated.body.data.draft.attachments;
+  assert.equal(attachments.length, MAX_DRAFT_ATTACHMENTS);
+  assert.deepEqual(
+    attachments.map((item) => item.filename),
+    ['catalogue-1.pdf', 'catalogue-2.pdf', 'catalogue-3.pdf'],
+  );
+  for (const attachment of attachments) {
+    assert.deepEqual(Object.keys(attachment).sort(), ['filename', 'mimeType', 'productFileId', 'publicUrl', 'sizeBytes']);
+    assert.equal(attachment.mimeType, 'application/pdf');
+    assert.ok(Number(attachment.sizeBytes) > 0);
+    assert.ok(attachment.publicUrl.startsWith('/api/v1/public/product-files/'));
+  }
+
+  // The writer context must receive absolute public links (relative URLs are
+  // not clickable inside emails), while stored attachments keep the relative form.
+  assert.equal(agentCalls.length, 1);
+  assert.deepEqual(agentCalls[0].context.productFiles, [
+    { filename: 'catalogue-1.pdf', publicUrl: 'http://127.0.0.1:4173/api/v1/public/product-files/token-1' },
+    { filename: 'catalogue-2.pdf', publicUrl: 'http://127.0.0.1:4173/api/v1/public/product-files/token-2' },
+    { filename: 'catalogue-3.pdf', publicUrl: 'http://127.0.0.1:4173/api/v1/public/product-files/token-3' },
+  ]);
+  assert.deepEqual(loaderCalls[0], { wsId: workspaceId, productId: product.id });
+
+  // Detail and list must expose the parsed attachments array.
+  const detail = await ctx.request('GET', `/api/v1/drafts/${draft.id}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.data.attachments.length, 3);
+  assert.equal(detail.body.data.draft.attachments.length, 3);
+  const list = await ctx.request('GET', '/api/v1/drafts');
+  const row = list.body.data.items.find((item) => item.id === draft.id);
+  assert.equal(row.attachments.length, 3);
+
+  const stored = get('SELECT attachments_json FROM message_drafts WHERE workspace_id = ? AND id = ?', [workspaceId, draft.id]);
+  const parsed = JSON.parse(stored.attachments_json);
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0].productFileId, 'prf_pdf_1');
+});
+
+test('drafts: generation without product PDFs writes an empty attachments array', async (t) => {
+  const ctx = await createTestContext();
+  t.after(async () => {
+    resetAgentImplementations();
+    resetProductFilesLoaderForTests();
+    await ctx.close();
+  });
+  const workspaceId = ctx.owner.workspaceId;
+  const company = seedCompany({ workspaceId });
+  const contact = seedContact({ workspaceId, companyId: company.id });
+  const product = seedProduct({ workspaceId });
+  const campaign = await createProductCampaign(ctx, product.id);
+  const draft = await createDraft(ctx, company, contact, { campaignId: campaign.id });
+
+  setProductFilesLoaderForTests(() => [
+    { productFileId: 'prf_img', filename: 'product.png', mimeType: 'image/png', sizeBytes: 500, publicUrl: '/api/v1/public/product-files/img' },
+  ]);
+  const agentCalls = [];
+  setAgentImplementation('generateOutreachDraft', async (args) => {
+    agentCalls.push(args);
+    return { subject: 'No attachments', bodyText: 'Plain outreach body without product documents.', language: 'en' };
+  });
+
+  const generated = await ctx.request('POST', `/api/v1/drafts/${draft.id}/generate`, { body: {} });
+  assert.equal(generated.status, 200, generated.text);
+  assert.deepEqual(generated.body.data.draft.attachments, []);
+  assert.deepEqual(agentCalls[0].context.productFiles, []);
+  const stored = get('SELECT attachments_json FROM message_drafts WHERE workspace_id = ? AND id = ?', [workspaceId, draft.id]);
+  assert.deepEqual(JSON.parse(stored.attachments_json), []);
+  const detail = await ctx.request('GET', `/api/v1/drafts/${draft.id}`);
+  assert.deepEqual(detail.body.data.attachments, []);
+});
+
+test('drafts: product-files module not ready degrades to no attachments', async (t) => {
+  const ctx = await createTestContext();
+  t.after(async () => {
+    resetAgentImplementations();
+    resetProductFilesLoaderForTests();
+    await ctx.close();
+  });
+  const workspaceId = ctx.owner.workspaceId;
+  const company = seedCompany({ workspaceId });
+  const contact = seedContact({ workspaceId, companyId: company.id });
+  const product = seedProduct({ workspaceId });
+  const campaign = await createProductCampaign(ctx, product.id);
+  const draft = await createDraft(ctx, company, contact, { campaignId: campaign.id });
+
+  // No loader override: the real dynamic import of services/product-files.mjs
+  // may fail while t-data is still working; generation must still succeed.
+  resetProductFilesLoaderForTests();
+  setAgentImplementation('generateOutreachDraft', async () => ({ subject: 'Degraded', bodyText: 'Body still generated without media.', language: 'en' }));
+  const generated = await ctx.request('POST', `/api/v1/drafts/${draft.id}/generate`, { body: {} });
+  assert.equal(generated.status, 200, generated.text);
+  assert.deepEqual(generated.body.data.draft.attachments, []);
+});
+
+test('drafts: failed generation does not write dirty attachments', async (t) => {
+  const ctx = await createTestContext();
+  t.after(async () => {
+    resetAgentImplementations();
+    resetProductFilesLoaderForTests();
+    await ctx.close();
+  });
+  const workspaceId = ctx.owner.workspaceId;
+  const company = seedCompany({ workspaceId });
+  const contact = seedContact({ workspaceId, companyId: company.id });
+  const product = seedProduct({ workspaceId });
+  const campaign = await createProductCampaign(ctx, product.id);
+  const draft = await createDraft(ctx, company, contact, { campaignId: campaign.id });
+
+  setProductFilesLoaderForTests(() => [pdfFile(1)]);
+  setAgentImplementation('generateOutreachDraft', async () => {
+    throw new Error('model exploded');
+  });
+  const generated = await ctx.request('POST', `/api/v1/drafts/${draft.id}/generate`, { body: {} });
+  assert.equal(generated.status, 502);
+  assert.equal(generated.body.error.code, 'AGENT_FAILED');
+  const stored = get('SELECT attachments_json, status, subject FROM message_drafts WHERE workspace_id = ? AND id = ?', [workspaceId, draft.id]);
+  assert.deepEqual(JSON.parse(stored.attachments_json), []);
+  assert.equal(stored.status, 'draft');
+  assert.equal(stored.subject, 'Partnership');
+});
+
+test('drafts: real product-files module picks up stored PDFs (if t-data delivered)', async (t) => {
+  const ctx = await createTestContext();
+  t.after(async () => {
+    resetAgentImplementations();
+    resetProductFilesLoaderForTests();
+    await ctx.close();
+  });
+  let productFilesModule = null;
+  try {
+    productFilesModule = await import('../../server/services/product-files.mjs');
+  } catch {
+    productFilesModule = null;
+  }
+  if (typeof productFilesModule?.listProductFilesForEmail !== 'function') {
+    t.skip('product-files service not delivered yet; injection path covered by the other tests');
+    return;
+  }
+  const workspaceId = ctx.owner.workspaceId;
+  const company = seedCompany({ workspaceId });
+  const contact = seedContact({ workspaceId, companyId: company.id });
+  const product = seedProduct({ workspaceId });
+  const campaign = await createProductCampaign(ctx, product.id);
+  const draft = await createDraft(ctx, company, contact, { campaignId: campaign.id });
+
+  const fileId = `prf_${Date.now()}`;
+  const relativePath = `products/${workspaceId}/${product.id}/${fileId}.pdf`;
+  const absolutePath = path.join(ctx.config.uploadsDir, relativePath);
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  fs.writeFileSync(absolutePath, Buffer.from('%PDF-1.4 test catalogue'));
+  run(
+    `INSERT INTO product_files (id, workspace_id, product_id, filename, mime_type, size_bytes, storage_path, kind, created_at)
+     VALUES (?, ?, ?, 'catalogue.pdf', 'application/pdf', 20, ?, 'document', ?)`,
+    [fileId, workspaceId, product.id, relativePath, new Date().toISOString()],
+  );
+
+  resetProductFilesLoaderForTests();
+  setAgentImplementation('generateOutreachDraft', async () => ({ subject: 'With real catalogue', bodyText: 'Body generated with the real product file module.', language: 'en' }));
+  const generated = await ctx.request('POST', `/api/v1/drafts/${draft.id}/generate`, { body: {} });
+  assert.equal(generated.status, 200, generated.text);
+  const attachments = generated.body.data.draft.attachments;
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0].productFileId, fileId);
+  assert.equal(attachments[0].filename, 'catalogue.pdf');
+  assert.equal(attachments[0].mimeType, 'application/pdf');
+  assert.ok(attachments[0].publicUrl.includes('/api/v1/public/product-files/'));
+});
+
 test('drafts: tenant isolation', async (t) => {
   const ctx = await createTestContext();
   t.after(() => ctx.close());
@@ -187,5 +417,6 @@ test('drafts: tenant isolation', async (t) => {
   ctx.as(other);
   assert.equal((await ctx.request('GET', `/api/v1/drafts/${draft.id}`)).status, 404);
   assert.equal((await ctx.request('POST', `/api/v1/drafts/${draft.id}/approve`, { body: {} })).status, 404);
+  assert.equal((await ctx.request('POST', `/api/v1/drafts/${draft.id}/generate`, { body: {} })).status, 404);
   assert.equal((await ctx.request('GET', '/api/v1/drafts')).body.data.items.length, 0);
 });

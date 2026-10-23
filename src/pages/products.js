@@ -3,7 +3,8 @@
  *
  * Products are the single source of truth for outward claims. Certifications,
  * capacity, MOQ, pricing and lead time are stored exactly as entered; the UI
- * never generates or suggests facts.
+ * never generates or suggests facts. Media (main image + PDF documents) and
+ * keywords are supplementary and always user-approved before saving.
  */
 import { append, clear, el } from '../utils/dom.mjs';
 import { api, queryString } from '../app/api.mjs';
@@ -16,7 +17,10 @@ import {
   dataTable,
   emptyState,
   field,
+  helpTip,
+  icon,
   input,
+  loadingBlock,
   notice,
   openModal,
   pageHeader,
@@ -31,10 +35,15 @@ import { splitList } from './companies.js';
 
 export const meta = {
   title: '产品资料',
-  help: '产品参数、认证、MOQ 与交付条件。所有对外承诺（认证、产能、价格、交期）必须来自这里的已确认资料；AI 不得编造任何未在此登记的事实。',
+  help: '产品参数、认证、MOQ、交付条件、图片/PDF 资料与关键词。所有对外承诺（认证、产能、价格、交期）必须来自这里的已确认资料；AI 只扩展关键词，不得编造事实。',
 };
 
 const PAGE_SIZE = 12;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
+const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/webp'];
+const PDF_MIME = 'application/pdf';
+const MAX_KEYWORDS = 30;
+const KEYWORD_MAX_LENGTH = 80;
 
 const PRODUCT_STATUS = {
   active: ['在售', 'green'],
@@ -69,6 +78,110 @@ function safeArray(value) {
 function productStatusBadge(status) {
   const found = PRODUCT_STATUS[status] || [status || '未知', 'gray'];
   return badge(found[0], found[1]);
+}
+
+function isImageFile(file) {
+  return Boolean(file) && (file.kind === 'image' || String(file.mimeType || '').startsWith('image/'));
+}
+
+function isPdfFile(file) {
+  return Boolean(file) && (file.kind === 'document' || file.mimeType === PDF_MIME);
+}
+
+function productFiles(product) {
+  return safeArray(product && product.files);
+}
+
+/** Main image URL: explicit mainImageUrl, then the isMain image, then first image. */
+function productImageUrl(product) {
+  if (!product) return '';
+  if (product.mainImageUrl) return product.mainImageUrl;
+  const files = productFiles(product);
+  const main = files.find((file) => isImageFile(file) && file.isMain);
+  const first = main || files.find((file) => isImageFile(file));
+  return first ? first.url || '' : '';
+}
+
+function placeholderThumb() {
+  const thumb = el('span', 'page-product-thumb placeholder');
+  thumb.appendChild(icon('box', 18));
+  return thumb;
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size < 0) return '—';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function detectMime(file) {
+  const type = String((file && file.type) || '').toLowerCase();
+  if (type) return type;
+  const ext = String((file && file.name) || '').split('.').pop().toLowerCase();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'pdf') return 'application/pdf';
+  return '';
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function dataUrlBase64(dataUrl) {
+  const text = String(dataUrl || '');
+  const index = text.indexOf(',');
+  return index >= 0 ? text.slice(index + 1) : text;
+}
+
+function absoluteUrl(path) {
+  const value = String(path || '').trim();
+  if (!value) return '';
+  try {
+    return new URL(value, window.location.origin).href;
+  } catch {
+    return value;
+  }
+}
+
+async function copyText(value) {
+  const text = String(value || '');
+  if (!text) return false;
+  try {
+    if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
+      throw new Error('clipboard unavailable');
+    }
+    await navigator.clipboard.writeText(text);
+    toast('公开链接已复制', 'success', 1800);
+    return true;
+  } catch {
+    toast('复制失败，请手动选择链接', 'error');
+    return false;
+  }
+}
+
+/** Clean keyword input: trim, drop blanks/duplicates, cap length and count. */
+function sanitizeKeywords(value) {
+  const seen = new Set();
+  const out = [];
+  for (const item of splitList(value)) {
+    const word = item.trim().slice(0, KEYWORD_MAX_LENGTH);
+    if (!word) continue;
+    const key = word.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(word);
+    if (out.length >= MAX_KEYWORDS) break;
+  }
+  return out;
 }
 
 // ------------------------------------------------------------------ page
@@ -119,8 +232,355 @@ export async function render(root, params, ctx) {
         placeholder: '逗号分隔，例如 乘用车, 商用车, 售后维修',
       }),
       specs: textarea({ value: specsValue, rows: 5, placeholder: '{"voltage":"12V","thickness":"18mm"}' }),
+      keywords: textarea({
+        value: product ? safeArray(product.keywords).join(', ') : '',
+        rows: 2,
+        placeholder: '逗号或换行分隔，例如 brake pads, aftermarket, distributor',
+      }),
     };
 
+    // ---------------------------------------------------------- media state
+    const media = {
+      files: [],
+      pending: [],
+      loading: editing,
+      error: null,
+      busy: false,
+      changed: false,
+    };
+    let saved = false;
+    let keywordsNoteHost = null;
+    let mediaListHost = null;
+    let aiLabel = null;
+    let aiBtn = null;
+    const imageInput = input({ type: 'file', className: 'hidden' });
+    imageInput.accept = 'image/png,image/jpeg,image/webp';
+    const pdfInput = input({ type: 'file', className: 'hidden' });
+    pdfInput.accept = 'application/pdf';
+
+    async function loadFiles() {
+      if (!editing) {
+        media.loading = false;
+        renderMedia();
+        return;
+      }
+      media.loading = true;
+      renderMedia();
+      try {
+        const data = await api.get(`/api/v1/products/${encodeURIComponent(product.id)}/files`);
+        media.files = unwrapList(data).items.filter((file) => isImageFile(file) || isPdfFile(file));
+        media.error = null;
+      } catch (error) {
+        media.files = [];
+        media.error = errorMessage(error);
+      } finally {
+        media.loading = false;
+        renderMedia();
+      }
+    }
+
+    async function uploadFile(payload) {
+      if (!product || !product.id) return false;
+      try {
+        await api.post(`/api/v1/products/${encodeURIComponent(product.id)}/files`, payload);
+        media.changed = true;
+        await loadFiles();
+        return true;
+      } catch (error) {
+        toast(`文件「${payload.filename}」上传失败：${errorMessage(error)}`, 'error');
+        return false;
+      }
+    }
+
+    function setBusy(value) {
+      media.busy = value;
+      imageInput.disabled = value;
+      pdfInput.disabled = value;
+      renderMedia();
+    }
+
+    async function handlePicked(file, kind) {
+      if (!file || media.busy) return;
+      const mimeType = detectMime(file);
+      const expected = kind === 'image' ? IMAGE_MIMES : [PDF_MIME];
+      if (!expected.includes(mimeType)) {
+        toast(kind === 'image' ? '仅支持 PNG / JPEG / WebP 图片' : '仅支持 PDF 文档', 'warning');
+        return;
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        toast(`文件大小不能超过 8MB（当前 ${formatFileSize(file.size)}）`, 'warning');
+        return;
+      }
+      let dataUrl;
+      try {
+        dataUrl = await readFileAsDataUrl(file);
+      } catch (error) {
+        toast(errorMessage(error), 'error');
+        return;
+      }
+      const payload = {
+        filename: file.name || (kind === 'image' ? 'image' : 'document.pdf'),
+        mimeType,
+        dataBase64: dataUrlBase64(dataUrl),
+        sizeBytes: file.size,
+        kind,
+      };
+      if (!editing) {
+        media.pending.push({ ...payload, kind, dataUrl });
+        renderMedia();
+        return;
+      }
+      setBusy(true);
+      const ok = await uploadFile(payload);
+      setBusy(false);
+      if (ok) toast('文件已上传', 'success');
+    }
+
+    imageInput.addEventListener('change', () => {
+      const file = imageInput.files && imageInput.files[0];
+      imageInput.value = '';
+      void handlePicked(file, 'image');
+    });
+    pdfInput.addEventListener('change', () => {
+      const file = pdfInput.files && pdfInput.files[0];
+      pdfInput.value = '';
+      void handlePicked(file, 'document');
+    });
+
+    async function setMainImage(file) {
+      try {
+        await api.post(
+          `/api/v1/products/${encodeURIComponent(product.id)}/files/${encodeURIComponent(file.id)}/main`,
+          {},
+        );
+        toast('已设为主图', 'success');
+        media.changed = true;
+        await loadFiles();
+      } catch (error) {
+        toast(errorMessage(error), 'error');
+      }
+    }
+
+    async function removeUploadedFile(file) {
+      const confirmed = await confirmDialog({
+        title: '删除文件',
+        message: `确认删除「${file.filename}」？删除后不会再作为邮件附件或公开链接使用。`,
+        confirmText: '删除',
+        danger: true,
+      });
+      if (!confirmed) return;
+      try {
+        await api.delete(
+          `/api/v1/products/${encodeURIComponent(product.id)}/files/${encodeURIComponent(file.id)}`,
+        );
+        toast('文件已删除', 'success');
+        media.changed = true;
+        await loadFiles();
+      } catch (error) {
+        toast(errorMessage(error), 'error');
+      }
+    }
+
+    function mediaActions(file) {
+      const row = el('div', 'row');
+      append(row, [
+        button('复制链接', {
+          size: 'sm',
+          variant: 'ghost',
+          iconName: 'copy',
+          disabled: !file.publicUrl,
+          title: file.publicUrl ? '复制公开链接' : '该文件没有公开链接',
+          onClick: () => copyText(absoluteUrl(file.publicUrl)),
+        }),
+        button('删除', {
+          size: 'sm',
+          variant: 'ghost',
+          iconName: 'trash',
+          disabled: media.busy,
+          onClick: () => removeUploadedFile(file),
+        }),
+      ]);
+      return row;
+    }
+
+    function renderImageItem({ url, filename, sizeBytes, isMain, onRemove, onSetMain }) {
+      const item = el('div', 'page-media-item');
+      const img = el('img', '');
+      img.src = url;
+      img.alt = filename || '产品图片';
+      img.loading = 'lazy';
+      const name = el('div', 'page-media-name', filename || '图片');
+      const meta = el('div', 'page-media-meta', `${formatFileSize(sizeBytes)}${isMain ? ' · 当前主图' : ''}`);
+      const actions = el('div', 'row page-media-actions');
+      if (onSetMain && !isMain) {
+        append(actions, [
+          button('设为主图', { size: 'sm', variant: 'ghost', iconName: 'star', onClick: onSetMain }),
+        ]);
+      }
+      append(actions, [
+        onRemove
+          ? button('移除', { size: 'sm', variant: 'ghost', iconName: 'trash', onClick: onRemove })
+          : button('删除', {
+              size: 'sm',
+              variant: 'ghost',
+              iconName: 'trash',
+              disabled: media.busy,
+              onClick: () => removeUploadedFile({ id: '', filename }),
+            }),
+      ]);
+      append(item, [img, name, meta, actions]);
+      return item;
+    }
+
+    function renderMedia() {
+      if (!mediaListHost) return;
+      clear(mediaListHost);
+      if (media.loading) {
+        mediaListHost.appendChild(loadingBlock('正在加载文件…'));
+        return;
+      }
+      if (media.error) {
+        const errorBox = el('div', 'page-media-error');
+        append(errorBox, [
+          notice(`文件接口暂不可用：${media.error}。可先编辑并保存其他字段。`, 'warn'),
+          button('重试加载文件', { size: 'sm', iconName: 'refresh', onClick: () => loadFiles() }),
+        ]);
+        mediaListHost.appendChild(errorBox);
+      }
+
+      const images = media.files.filter(isImageFile);
+      const documents = media.files.filter(isPdfFile);
+
+      if (images.length) {
+        const group = el('div', 'page-media-group');
+        const thumbs = el('div', 'page-media-thumbs');
+        for (const file of images) {
+          thumbs.appendChild(
+            renderImageItem({
+              url: file.url || '',
+              filename: file.filename,
+              sizeBytes: file.sizeBytes,
+              isMain: Boolean(file.isMain),
+              onSetMain: () => setMainImage(file),
+              onRemove: () => removeUploadedFile(file),
+            }),
+          );
+        }
+        append(group, [el('span', 'page-media-label', '已上传图片'), thumbs]);
+        mediaListHost.appendChild(group);
+      }
+      if (media.pending.filter((item) => item.kind === 'image').length) {
+        const group = el('div', 'page-media-group');
+        const thumbs = el('div', 'page-media-thumbs');
+        media.pending
+          .filter((item) => item.kind === 'image')
+          .forEach((item) => {
+            thumbs.appendChild(
+              renderImageItem({
+                url: item.dataUrl,
+                filename: item.filename,
+                sizeBytes: item.sizeBytes,
+                isMain: false,
+                onRemove: () => {
+                  media.pending.splice(media.pending.indexOf(item), 1);
+                  renderMedia();
+                },
+              }),
+            );
+          });
+        append(group, [
+          el('span', 'page-media-label', '待上传图片'),
+          thumbs,
+        ]);
+        mediaListHost.appendChild(group);
+      }
+
+      if (documents.length) {
+        const group = el('div', 'page-media-group');
+        const docs = el('div', 'page-media-docs');
+        for (const file of documents) {
+          const row = el('div', 'page-media-doc');
+          const info = el('div', 'page-media-doc-info');
+          append(info, [
+            el('b', '', file.filename || 'PDF 文档'),
+            el('span', 'muted', formatFileSize(file.sizeBytes)),
+          ]);
+          append(row, [info, mediaActions(file)]);
+          docs.appendChild(row);
+        }
+        append(group, [el('span', 'page-media-label', '已上传 PDF'), docs]);
+        mediaListHost.appendChild(group);
+      }
+      if (media.pending.filter((item) => item.kind === 'document').length) {
+        const group = el('div', 'page-media-group');
+        const docs = el('div', 'page-media-docs');
+        media.pending
+          .filter((item) => item.kind === 'document')
+          .forEach((item) => {
+            const row = el('div', 'page-media-doc');
+            const info = el('div', 'page-media-doc-info');
+            append(info, [el('b', '', item.filename), el('span', 'muted', formatFileSize(item.sizeBytes))]);
+            append(row, [
+              info,
+              el('div', 'row', [
+                button('移除', {
+                  size: 'sm',
+                  variant: 'ghost',
+                  iconName: 'trash',
+                  onClick: () => {
+                    media.pending.splice(media.pending.indexOf(item), 1);
+                    renderMedia();
+                  },
+                }),
+              ]),
+            ]);
+            docs.appendChild(row);
+          });
+        append(group, [el('span', 'page-media-label', '待上传 PDF'), docs]);
+        mediaListHost.appendChild(group);
+      }
+
+      if (!media.files.length && !media.pending.length && !media.error) {
+        mediaListHost.appendChild(
+          el('div', 'page-media-empty', editing ? '还没有图片或 PDF 资料' : '还没有选择文件，保存产品后会自动上传'),
+        );
+      }
+    }
+
+    async function generateKeywords() {
+      if (!editing || !product || !product.id) {
+        toast('请先保存产品，再生成关键词', 'warning');
+        return;
+      }
+      aiBtn.disabled = true;
+      aiLabel.textContent = '生成中…';
+      try {
+        const result = await api.post(
+          `/api/v1/products/${encodeURIComponent(product.id)}/generate-keywords`,
+          {},
+        );
+        const keywords = sanitizeKeywords(safeArray(result && result.keywords).join(', '));
+        if (!keywords.length) {
+          toast('AI 未返回可用关键词，请稍后重试', 'warning');
+          return;
+        }
+        controls.keywords.value = keywords.join(', ');
+        toast(`已生成 ${keywords.length} 个关键词`, 'success');
+        clear(keywordsNoteHost);
+        const negativeKeywords = safeArray(result && result.negativeKeywords);
+        const notes = (result && result.notes) || '仅基于已填产品资料扩展关键词';
+        const noteParts = [`AI 说明：${notes}`];
+        if (negativeKeywords.length) noteParts.push(`建议排除词：${negativeKeywords.slice(0, 12).join('、')}`);
+        keywordsNoteHost.appendChild(helpTip(noteParts.join('；')));
+      } catch (error) {
+        toast(errorMessage(error), 'error');
+      } finally {
+        aiBtn.disabled = false;
+        aiLabel.textContent = 'AI 生成关键词';
+      }
+    }
+
+    // ---------------------------------------------------------- form layout
     const descriptionField = field('产品描述', controls.description, {
       help: '只写已确认的参数与用途；描述会作为匹配与写信的事实依据。',
     });
@@ -136,8 +596,60 @@ export async function render(root, params, ctx) {
     });
     specsField.classList.add('span-2');
 
-    const body = el('div', 'form-grid');
-    append(body, [
+    // Keywords -------------------------------------------------------------
+    aiLabel = el('span', '', 'AI 生成关键词');
+    aiBtn = button(null, {
+      size: 'sm',
+      variant: 'outline',
+      iconName: 'sparkles',
+      disabled: !editing || !writable,
+      title: editing ? '基于已填产品资料生成关键词' : '保存产品后可生成关键词',
+      onClick: generateKeywords,
+    });
+    aiBtn.appendChild(aiLabel);
+    keywordsNoteHost = el('span', 'row');
+    const keywordActions = el('div', 'page-keyword-actions');
+    append(keywordActions, [aiBtn, keywordsNoteHost]);
+    const keywordWrap = el('div', 'page-keyword-field');
+    append(keywordWrap, [controls.keywords, keywordActions]);
+    const keywordField = field('关键词', keywordWrap, {
+      help: '逗号或换行分隔，最多 30 个、每个 ≤80 字符；可手动填写或使用 AI 生成后核对再保存。AI 只基于已填资料扩展，不编造认证或客户。',
+    });
+    keywordField.classList.add('span-2');
+
+    // Media ---------------------------------------------------------------
+    mediaListHost = el('div', 'page-media-list');
+    const pickImageBtn = button('选择图片', {
+      size: 'sm',
+      variant: 'outline',
+      iconName: 'upload',
+      disabled: !writable,
+      onClick: () => imageInput.click(),
+    });
+    const pickPdfBtn = button('选择 PDF', {
+      size: 'sm',
+      variant: 'outline',
+      iconName: 'upload',
+      disabled: !writable,
+      onClick: () => pdfInput.click(),
+    });
+    const uploadRow = el('div', 'page-media-uploads');
+    append(uploadRow, [
+      pickImageBtn,
+      pickPdfBtn,
+      imageInput,
+      pdfInput,
+      helpTip('图片支持 PNG / JPEG / WebP，PDF 仅支持 application/pdf，单文件 ≤8MB。新建产品时选择的文件会在保存后自动上传；上传失败不影响其他字段保存。'),
+    ]);
+    const mediaWrap = el('div', 'page-media');
+    append(mediaWrap, [uploadRow, mediaListHost]);
+    const mediaField = field('图片与 PDF 资料', mediaWrap, {
+      help: '第一张图片会自动设为主图，也可手动切换；PDF 会用于开发信附件与公开链接。文件接口未就绪时会提示，不影响其余编辑。',
+    });
+    mediaField.classList.add('span-2');
+
+    const form = el('div', 'form-grid');
+    append(form, [
       field('产品名称', controls.name, { required: true }),
       field('分类', controls.category),
       field('SKU', controls.sku),
@@ -149,6 +661,8 @@ export async function render(root, params, ctx) {
       field('样品', controls.samples),
       field('交期', controls.leadTime),
       descriptionField,
+      keywordField,
+      mediaField,
       certField,
       appField,
       specsField,
@@ -157,8 +671,11 @@ export async function render(root, params, ctx) {
     let saving = false;
     const dialog = openModal({
       title: editing ? '编辑产品' : '新建产品',
-      body,
+      body: form,
       size: 'lg',
+      onClose: () => {
+        if (!saved && media.changed) load();
+      },
       actions: [
         { label: '取消' },
         {
@@ -201,15 +718,50 @@ export async function render(root, params, ctx) {
               leadTime: String(controls.leadTime.value || '').trim() || null,
               certifications: splitList(controls.certifications.value),
               applications: splitList(controls.applications.value),
+              keywords: sanitizeKeywords(controls.keywords.value),
               specs,
             };
             const saveBtn = dialog.modal.querySelector('.modal-foot .btn:last-child');
             saving = true;
             if (saveBtn) saveBtn.disabled = true;
             try {
-              if (editing) await api.patch(`/api/v1/products/${encodeURIComponent(product.id)}`, payload);
-              else await api.post('/api/v1/products', payload);
-              toast(editing ? '产品已更新' : '产品已创建', 'success');
+              if (editing) {
+                await api.patch(`/api/v1/products/${encodeURIComponent(product.id)}`, payload);
+                saved = true;
+                toast('产品已更新', 'success');
+                done();
+                load();
+                return;
+              }
+              const created = await api.post('/api/v1/products', payload);
+              const createdId =
+                (created && (created.id || (created.product && created.product.id))) || null;
+              const pending = [...media.pending];
+              let uploaded = 0;
+              const failed = [];
+              if (createdId && pending.length) {
+                for (const item of pending) {
+                  try {
+                    await api.post(`/api/v1/products/${encodeURIComponent(createdId)}/files`, {
+                      filename: item.filename,
+                      mimeType: item.mimeType,
+                      dataBase64: item.dataBase64,
+                      kind: item.kind,
+                    });
+                    uploaded += 1;
+                  } catch (error) {
+                    failed.push(`${item.filename}：${errorMessage(error)}`);
+                  }
+                }
+              }
+              saved = true;
+              if (failed.length) {
+                toast(`产品已创建；${uploaded} 个文件上传成功，${failed.length} 个失败（${failed[0]}）`, 'warning');
+              } else if (uploaded) {
+                toast(`产品已创建，已上传 ${uploaded} 个文件`, 'success');
+              } else {
+                toast('产品已创建', 'success');
+              }
               done();
               load();
             } catch (error) {
@@ -222,6 +774,9 @@ export async function render(root, params, ctx) {
         },
       ],
     });
+    renderMedia();
+    if (editing) loadFiles();
+    void dialog;
   }
 
   async function setStatus(product, status) {
@@ -254,26 +809,42 @@ export async function render(root, params, ctx) {
   function productCard(product) {
     const node = el('article', 'page-product-card');
     const head = el('div', 'page-product-head');
+    const imageUrl = productImageUrl(product);
+    let thumb;
+    if (imageUrl) {
+      thumb = el('img', 'page-product-thumb');
+      thumb.src = imageUrl;
+      thumb.alt = product.name || '产品图片';
+      thumb.loading = 'lazy';
+      thumb.addEventListener('error', () => {
+        const placeholder = placeholderThumb();
+        if (thumb.parentNode) thumb.parentNode.replaceChild(placeholder, thumb);
+      });
+    } else {
+      thumb = placeholderThumb();
+    }
     const titleBlock = el('div', 'page-product-title');
     append(titleBlock, [
       el('b', '', product.name || '未命名产品'),
-      el(
-        'span',
-        'cell-sub',
-        [product.category, product.sku].filter(Boolean).join(' · ') || '未分类',
-      ),
+      el('span', 'cell-sub', [product.category, product.sku].filter(Boolean).join(' · ') || '未分类'),
     ]);
-    append(head, [titleBlock, productStatusBadge(product.status)]);
+    append(head, [thumb, titleBlock, productStatusBadge(product.status)]);
     node.appendChild(head);
     if (product.description) {
       node.appendChild(el('p', 'page-product-desc', truncate(product.description, 150)));
     }
     const meta = el('div', 'page-product-meta');
     const certificationCount = safeArray(product.certifications).length;
+    const keywordCount = safeArray(product.keywords).length;
+    const files = productFiles(product);
+    const imageCount = files.filter(isImageFile).length;
+    const pdfCount = files.filter(isPdfFile).length;
     const facts = [
       ['MOQ', product.moq || '—'],
       ['认证', `${certificationCount} 项`],
       ['交期', product.leadTime || '—'],
+      ['关键词', `${keywordCount} 个`],
+      ['图片 / PDF', `${imageCount} / ${pdfCount}`],
       ['匹配企业', String(product.matchCount ?? 0)],
     ];
     for (const [label, value] of facts) {
@@ -331,7 +902,7 @@ export async function render(root, params, ctx) {
     return emptyState({
       iconName: 'box',
       title: '还没有产品资料',
-      description: '创建第一个产品，登记已确认的参数、认证与交付条件；评分与写信都以此为事实来源。',
+      description: '创建第一个产品，登记已确认的参数、认证、图片/PDF 与交付条件；评分与写信都以此为事实来源。',
       action: button('创建第一个产品', {
         variant: 'primary',
         iconName: 'plus',

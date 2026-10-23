@@ -9,7 +9,7 @@
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-0-blue?style=flat-square)](docs/LICENSE-REGISTER.md)
 [![License](https://img.shields.io/badge/license-Proprietary-lightgrey?style=flat-square)](LICENSE)
 
-> **v1.0.0 状态**：15 个前端页面模块 / 16 条路由已交付并通过真实浏览器验收；自动化测试（274 项）与安全 E2E（15/15）结果见 [CHANGELOG.md](CHANGELOG.md)。
+> **v1.1.0 状态**：15 个前端页面模块 / 16 条路由、11 个 Agent 角色、161 条 API 路由；产品图片/PDF 资料、AI 关键词、邮件 PDF 附件与公开签名链接已集成。自动化测试 **309 项（308 通过 / 1 跳过 / 0 失败）**，安全与媒体 E2E **16/16**，详见 [CHANGELOG.md](CHANGELOG.md) 与 [docs/VERIFICATION.md](docs/VERIFICATION.md)。
 
 ---
 
@@ -54,10 +54,10 @@
 ## 核心能力
 
 - **企业与联系人主数据**：企业/联系人/来源/校验记录/去重（域名、邮箱唯一约束），支持角色分类与邮箱可信度分级（`unverified/valid/risky/invalid/inferred`）。
-- **产品与 ICP**：产品规格/认证/产能/MOQ/交期；ICP 支持目标国家、地区、企业类型、规模、角色、关键词与排除词、最低分。
-- **发现与补全**：发现批次（`discovery_runs`）、网页抓取、CSV 导入、邮箱推断（推测邮箱一律标记 `inferred`）、DNS MX 校验。
+- **产品与 ICP**：产品规格/认证/产能/MOQ/交期；**主图与 PDF 资料上传、AI 生成 B2B 关键词**；ICP 支持目标国家、地区、企业类型、规模、角色、关键词与排除词、最低分。
+- **发现与补全**：发现批次（`discovery_runs`）、网页抓取、CSV 导入、邮箱推断（推测邮箱一律标记 `inferred`）、DNS MX 校验；目标国家支持「全选欧洲 / 随机 8 国 / 清空」，**不选国家 = 全部市场**。
 - **评分与匹配**：规则评分、A/B/C/D 分级、因素与排除项、人工修正反馈。
-- **开发信与审批**：模板 + AI 草稿 + 合规检查 + 质量审查；草稿状态机 `draft → pending_approval → approved → scheduled → sent`。
+- **开发信与审批**：模板 + AI 草稿 + 合规检查 + 质量审查；**自动附加产品 PDF 并在正文写入公开签名链接**；草稿状态机 `draft → pending_approval → approved → scheduled → sent`。
 - **发送安全**：五道闸（审批/抑制/接管/窗口/限额）+ 全局暂停 + 重复发送检测 + 退信熔断（契约）。
 - **回复与收件箱**：IMAP 同步、线程关联、意向分类、建议回复、高意向通知。
 - **真人接管**：6 态自动化状态机；接管后取消待办与任务；`DO_NOT_CONTACT` 不可用普通恢复解除。
@@ -78,13 +78,13 @@ Node.js 单进程（≥22.5）
   ├─ server/routes      路由（薄层：校验 → service）
   ├─ server/services    业务规则、事务、审计、通知、入队
   ├─ server/repositories SQL + 行映射（强制 workspace_id）
-  ├─ server/agents      10 个角色 Agent + Provider 抽象 + 服务端提示词
-  ├─ server/jobs        数据库任务表 + Worker + 发送管线
+  ├─ server/agents      11 个角色 Agent + Provider 抽象 + 服务端提示词
+  ├─ server/jobs        数据库任务表 + Worker + 发送管线（含 PDF 附件）
   ├─ server/mail        SMTP / MIME / IMAP / 模拟邮箱
   └─ server/db          SQLite（WAL）迁移
         │
         ▼
-DATA_DIR：outreach.sqlite · uploads/ · logs/ · backups/ · secret.key
+DATA_DIR：outreach.sqlite · uploads/products（图片/PDF）· logs/ · backups/ · secret.key
 ```
 
 **关键取舍**（详见 [docs/DECISIONS.md](docs/DECISIONS.md)）：
@@ -134,10 +134,10 @@ npm start
 2. 首次打开会自动进入**初始化向导**：填写工作空间名称、管理员姓名、邮箱、密码（≥10 位，含字母与数字）。
 3. 初始化完成后自动登录，进入工作台。
 4. 建议立即按以下顺序配置：
-   - **设置 → 合规**：填写发件公司名、地址、隐私政策 URL；
-   - **设置 → AI**：选择模型 Provider（默认内置模拟，可离线试用）；
-   - **邮箱账户**：添加发件邮箱（或先用模拟邮箱体验完整流程）；
-   - **产品 → ICP → 发现**：录入一个真实产品与目标客户画像，跑一次发现。
+   - **系统设置 → 合规**：填写发件公司名、地址、隐私政策 URL；
+   - **系统设置 → AI 模型**：选择模型 Provider（默认内置模拟，可离线试用）；
+   - **系统设置 → 邮箱账户**：添加发件邮箱（或先用模拟邮箱体验完整流程）；
+   - **产品资料 → 客户画像 → 企业发现**：录入一个真实产品（含主图/PDF/关键词）与目标客户画像，跑一次发现。
 
 > 默认监听 `127.0.0.1:4173`，只允许本机访问。生产环境请用反向代理 + HTTPS，见 [DEPLOY.md](DEPLOY.md)。
 > 系统维护台：**http://127.0.0.1:4173/admin**（需 owner/admin 登录，可查看系统状态、备份、日志、许可证信息）。
@@ -171,11 +171,11 @@ npm start
 │  ├─ index.mjs               # 启动入口：迁移 → 监听 → Worker
 │  ├─ app.mjs / config.mjs
 │  ├─ core/                   # db/http/auth/crypto/audit/validate/ids/time/logger/rate-limit
-│  ├─ db/migrations/          # 001_init.sql（40 张表）
+│  ├─ db/migrations/          # 001_init.sql + 002_product_media_attachments.sql（40 张业务表，含迁移表共 41）
 │  ├─ repositories/           # SQL + 行映射
 │  ├─ services/               # 业务规则
 │  ├─ routes/                 # HTTP 路由
-│  ├─ agents/                 # Provider、提示词、10 个角色
+│  ├─ agents/                 # Provider、提示词、11 个角色
 │  ├─ jobs/                   # 队列、Worker、调度、发送管线
 │  ├─ mail/                   # SMTP / MIME / IMAP / 模拟邮箱
 │  └─ data/                   # 运行时数据（不提交，需备份）
@@ -197,7 +197,7 @@ npm start
 | `PORT` | `4173` | 端口 |
 | `APP_NAME` | `ZHIRAI Outreach` | 界面/邮件中显示的应用名 |
 | `TRUST_PROXY` | `0` | 仅当前面是可信反向代理时设 `1`（用于读取 `X-Forwarded-*`） |
-| `PUBLIC_BASE_URL` | `http://127.0.0.1:4173` | 对外地址；**必须**设置为真实 HTTPS 地址，否则退订链接与 Secure Cookie 不对 |
+| `PUBLIC_BASE_URL` | `http://127.0.0.1:4173` | 对外地址；**必须**设置为真实 HTTPS 地址，否则退订链接、邮件中的产品 PDF 公开链接与 Secure Cookie 都会不正确 |
 | `DATA_DIR` | `server/data` | 数据目录（数据库/上传/日志/备份/密钥） |
 | `LOG_LEVEL` | `info` | `debug/info/warn/error/silent` |
 | `SESSION_TTL_HOURS` | `168` | 会话有效期（1–8760） |
@@ -232,12 +232,13 @@ npm start
 | 路径 | 内容 | 是否入 Git |
 | --- | --- | --- |
 | `server/data/outreach.sqlite` | 全部业务数据（WAL 模式） | ❌ |
-| `server/data/uploads/` | 产品资料文件 | ❌ |
+| `server/data/uploads/` | 产品图片 / PDF 资料（`uploads/products/<workspace>/<product>/`） | ❌ |
 | `server/data/logs/app.log` | 应用日志 | ❌ |
-| `server/data/backups/` | 备份文件 | ❌ |
+| `server/data/backups/` | 备份文件（仅数据库，不含 uploads） | ❌ |
 | `server/data/secret.key` | 加密主密钥（凭据解密依赖它） | ❌ |
 
 **备份**：维护台「创建备份」或 `npm run backup`，生成 `backups/outreach-<时间戳>.sqlite`；恢复步骤见 [DEPLOY.md](DEPLOY.md)。
+**重要**：数据库备份**不包含** `uploads/` 中的产品图片/PDF（邮件附件依赖这些文件）。备份时需同时复制整个 `server/data/uploads/` 目录。
 **注意**：`secret.key` 丢失后已保存的模型/邮箱凭据无法解密（需重新录入）；请与备份分开安全保存。
 
 ---
@@ -249,13 +250,14 @@ npm start
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 完整系统架构研究方案（19 项交付、业务流程图、模块/Agent 职责、风险、商业化） |
 | [docs/RESEARCH.md](docs/RESEARCH.md) | 开源项目研究报告（A/B/C/D 分类、许可证核验、借鉴点、外部依赖） |
 | [docs/LICENSE-REGISTER.md](docs/LICENSE-REGISTER.md) | 第三方依赖与素材登记册（当前 0 依赖） |
-| [docs/DATA-MODEL.md](docs/DATA-MODEL.md) | 40 张表 ER、唯一约束/索引、保留与迁移策略 |
-| [docs/API.md](docs/API.md) + [docs/openapi.yaml](docs/openapi.yaml) | REST API 文档与 OpenAPI 描述 |
-| [docs/SECURITY.md](docs/SECURITY.md) | 威胁模型、认证/CSRF/加密、发送与 Agent 安全、生产清单、已知限制 |
+| [docs/DATA-MODEL.md](docs/DATA-MODEL.md) | 40 张业务表（含迁移表 41）ER、唯一约束/索引、保留与迁移策略 |
+| [docs/API.md](docs/API.md) + [docs/openapi.yaml](docs/openapi.yaml) | REST API 文档与 OpenAPI 描述（产品文件/关键词/附件） |
+| [docs/SECURITY.md](docs/SECURITY.md) | 威胁模型、认证/CSRF/加密、发送与 Agent 安全、公开 PDF 链接与上传限制、生产清单、已知限制 |
 | [docs/COMPLIANCE.md](docs/COMPLIANCE.md) | GDPR 与欧洲电子营销落地（**非法律意见**） |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 13 条 ADR（选择/理由/替代/代价） |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | 14 条 ADR（选择/理由/替代/代价） |
 | [docs/USER-GUIDE.md](docs/USER-GUIDE.md) | 中文操作手册（初始化 → 产品/ICP → 发现 → 评分 → 审批 → 发送 → 收件箱 → 接管 → CRM → 设置 → 备份） |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | v1.0 → v1.x 阶段计划与不自动化承诺 |
+| [docs/VERIFICATION.md](docs/VERIFICATION.md) | 验证报告（自动化测试、安全 E2E、真实浏览器验收；由发布负责人维护） |
 | [docs/CONTRACTS.md](docs/CONTRACTS.md) | 内部开发契约（模块接口，供二次开发参考） |
 | [DEPLOY.md](DEPLOY.md) | 自托管部署（Windows/Linux）、nginx/HTTPS、备份恢复、升级、排障 |
 | [CHANGELOG.md](CHANGELOG.md) | 版本记录 |
@@ -284,6 +286,7 @@ npm start
 - 密钥只在服务端；集成凭据 **AES-256-GCM + HKDF** 加密；日志/审计自动脱敏。
 - 会话 HttpOnly + CSRF 双提交 + Origin 校验；服务端 capability 权限矩阵；多工作空间行级隔离。
 - 默认人工审批；接管/退订/抑制在发送管线强制拦截；公开退订链接（HMAC 签名）。
+- 产品 PDF 的邮件公开链接为 **HMAC 签名、180 天有效、按租户校验**；上传限制 8 MB、MIME 白名单、路径遍历防护；**链接持有者无需登录即可打开 PDF，请勿上传敏感资料**。
 - 详细威胁模型与已知限制见 [docs/SECURITY.md](docs/SECURITY.md)。
 - **GDPR / 欧洲电子营销**：产品提供合法依据记录、来源记录、退订/抑制、保留策略、导出与审计，但**合法性由使用者（数据控制者）负责**；本文档不构成法律意见，商用前请专业复核，见 [docs/COMPLIANCE.md](docs/COMPLIANCE.md)。
 

@@ -12,11 +12,19 @@
 import test, { before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
 import { run, get, all, upsertSetting } from '../../server/core/db.mjs';
 import { id } from '../../server/core/ids.mjs';
 import { nowIso, addHours } from '../../server/core/time.mjs';
-import { sendDraft, assertSendAllowed, isWithinSendWindow } from '../../server/jobs/send-pipeline.mjs';
-import { parseMimeMessage } from '../../server/mail/mime.mjs';
+import {
+  buildCatalogueLinkLines,
+  loadDraftAttachments,
+  resolveUploadFilePath,
+  sendDraft,
+  assertSendAllowed,
+  isWithinSendWindow,
+} from '../../server/jobs/send-pipeline.mjs';
+import { MIME_ATTACHMENT_MAX_BYTES, parseMimeMessage } from '../../server/mail/mime.mjs';
 import { createTestContext } from '../../server/jobs/test-support.mjs';
 
 let ctx;
@@ -52,6 +60,8 @@ beforeEach(() => {
   run('DELETE FROM email_accounts WHERE workspace_id = ?', [workspaceId]);
   run('DELETE FROM automation_states WHERE workspace_id = ?', [workspaceId]);
   run('DELETE FROM suppression_records WHERE workspace_id = ?', [workspaceId]);
+  run('DELETE FROM product_files WHERE workspace_id = ?', [workspaceId]);
+  run('DELETE FROM products WHERE workspace_id = ?', [workspaceId]);
   run('DELETE FROM contacts WHERE workspace_id = ?', [workspaceId]);
   run('DELETE FROM companies WHERE workspace_id = ?', [workspaceId]);
   run('DELETE FROM usage_records WHERE workspace_id = ?', [workspaceId]);
@@ -141,6 +151,65 @@ function seed({
 
 function auditCount(action) {
   return get('SELECT COUNT(*) AS c FROM audit_events WHERE workspace_id = ? AND action = ?', [workspaceId, action])?.c ?? 0;
+}
+
+const PDF_CONTENT = Buffer.from('%PDF-1.4\n% ZHIRAI catalogue test\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n', 'binary');
+
+/** Insert a product + product_files row and (optionally) write the real file. */
+function seedProductFile({ filename = 'catalogue.pdf', mimeType = 'application/pdf', content = PDF_CONTENT, publicUrl = null, writeFile = true } = {}) {
+  seq += 1;
+  const now = nowIso();
+  const productId = id('prd');
+  const fileId = id('pfl');
+  run("INSERT INTO products (id, workspace_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)", [
+    productId,
+    workspaceId,
+    `Attachment Product ${seq}`,
+    now,
+    now,
+  ]);
+  const extension = String(mimeType).includes('/') ? String(mimeType).split('/')[1].replace(/[^a-z0-9]/gi, '') || 'bin' : 'bin';
+  const storagePath = `products/${workspaceId}/${productId}/${fileId}.${extension}`;
+  const absolutePath = path.join(ctx.config.uploadsDir, storagePath);
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  if (writeFile) fs.writeFileSync(absolutePath, content);
+  run(
+    `INSERT INTO product_files (id, workspace_id, product_id, filename, mime_type, size_bytes, storage_path, kind, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'document', ?)`,
+    [fileId, workspaceId, productId, filename, mimeType, content.length, storagePath, now],
+  );
+  return {
+    productId,
+    fileId,
+    filename,
+    mimeType,
+    content,
+    sizeBytes: content.length,
+    storagePath,
+    absolutePath,
+    publicUrl: publicUrl || `/api/v1/public/product-files/token-${fileId.toLowerCase()}`,
+  };
+}
+
+function declareAttachments(draftId, files) {
+  run('UPDATE message_drafts SET attachments_json = ? WHERE id = ? AND workspace_id = ?', [
+    JSON.stringify(
+      files.map((file) => ({
+        productFileId: file.fileId || file.productFileId,
+        filename: file.filename,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        publicUrl: file.publicUrl,
+      })),
+    ),
+    draftId,
+    workspaceId,
+  ]);
+}
+
+function storedAttachments(messageRowId) {
+  const row = get('SELECT attachments_json FROM email_messages WHERE id = ?', [messageRowId]);
+  return JSON.parse(row?.attachments_json || '[]');
 }
 
 function messageRows() {
@@ -388,4 +457,129 @@ test('isWithinSendWindow handles timezones, overnight windows and weekdays', () 
   const night = new Date('2026-10-22T23:30:00.000Z'); // 01:30 Berlin next day
   assert.equal(isWithinSendWindow({ start: 22, end: 6, weekdays: [0, 1, 2, 3, 4, 5, 6], timezone: 'Europe/Berlin' }, night).allowed, true);
   void addHours;
+});
+
+// ------------------------------------------------------------- attachments
+test('sendDraft attaches PDFs, appends catalogue links before the unsubscribe block and snapshots attachments', async () => {
+  const ids = seed({ bodyText: 'Dear buyer, please find our latest catalogue.' });
+  const first = seedProductFile({ filename: 'catalogue-2026.pdf' });
+  const second = seedProductFile({ filename: 'spec-sheet.pdf', content: Buffer.from('%PDF-1.4\nsecond document\n%%EOF\n') });
+  declareAttachments(ids.draftId, [first, second]);
+
+  const result = await sendDraft({ workspaceId, draftId: ids.draftId, actorType: 'user', config: ctx.config });
+  assert.equal(result.sent, true, JSON.stringify(result));
+  assert.equal(result.attachments.length, 2);
+  assert.deepEqual(result.attachmentWarnings, []);
+
+  // Snapshot persisted on the sent email_messages row.
+  const snapshot = storedAttachments(result.messageRowId);
+  assert.equal(snapshot.length, 2);
+  assert.deepEqual(snapshot.map((item) => item.filename), ['catalogue-2026.pdf', 'spec-sheet.pdf']);
+  assert.equal(snapshot[0].productFileId, first.fileId);
+  assert.equal(snapshot[0].mimeType, 'application/pdf');
+  assert.equal(snapshot[0].sizeBytes, first.content.length);
+  assert.equal(snapshot[0].publicUrl, first.publicUrl);
+
+  // MIME structure and payloads in the simulation outbox.
+  const raw = fs.readFileSync(result.outboxPath, 'utf8');
+  assert.match(raw, /^Content-Type: multipart\/mixed; boundary="/m);
+  const parsed = parseMimeMessage(raw);
+  assert.equal(parsed.attachments, 2);
+  assert.deepEqual(parsed.attachmentList.map((item) => item.filename), ['catalogue-2026.pdf', 'spec-sheet.pdf']);
+  assert.deepEqual(parsed.attachmentList[0].content, first.content);
+  assert.deepEqual(parsed.attachmentList[1].content, second.content);
+
+  const base = ctx.config.publicBaseUrl.replace(/\/+$/, '');
+  const linkOne = `Product catalogue (PDF): ${base}${first.publicUrl}`;
+  const linkTwo = `Product catalogue (PDF): ${base}${second.publicUrl}`;
+  assert.ok(parsed.text.includes(linkOne), parsed.text);
+  assert.ok(parsed.text.includes(linkTwo), parsed.text);
+  assert.ok(parsed.text.indexOf(linkOne) < parsed.text.indexOf('Unsubscribe / 退订:'), 'catalogue line must be before the compliance block');
+  assert.ok(parsed.text.indexOf(linkOne) > parsed.text.indexOf('Dear buyer'));
+
+  const audit = get("SELECT after_json FROM audit_events WHERE workspace_id = ? AND action = 'email.sent' ORDER BY created_at DESC LIMIT 1", [workspaceId]);
+  assert.match(audit.after_json, /"attachmentCount":2/);
+});
+
+test('catalogue link is not duplicated when the draft body already contains the publicUrl', async () => {
+  const file = seedProductFile({ filename: 'catalogue.pdf' });
+  const ids = seed({ bodyText: `Please download our catalogue here: ${file.publicUrl} — thank you.` });
+  declareAttachments(ids.draftId, [file]);
+  const result = await sendDraft({ workspaceId, draftId: ids.draftId, actorType: 'user', config: ctx.config });
+  assert.equal(result.sent, true);
+  const parsed = parseMimeMessage(fs.readFileSync(result.outboxPath, 'utf8'));
+  assert.equal(parsed.attachments, 1);
+  assert.equal(parsed.text.split('Product catalogue (PDF):').length - 1, 0, 'no duplicate catalogue line');
+  assert.equal(parsed.text.split(file.publicUrl).length - 1, 1, 'the existing publicUrl appears exactly once');
+});
+
+test('missing attachment file logs a warning and the mail is still delivered without it', async () => {
+  const missing = seedProductFile({ filename: 'gone.pdf', writeFile: false });
+  const ids = seed();
+  declareAttachments(ids.draftId, [missing]);
+  const result = await sendDraft({ workspaceId, draftId: ids.draftId, actorType: 'user', config: ctx.config });
+  assert.equal(result.sent, true, 'a missing attachment must not fail the whole send');
+  assert.deepEqual(result.attachments, []);
+  assert.equal(result.attachmentWarnings.length, 1);
+  assert.equal(result.attachmentWarnings[0].code, 'attachment_file_missing');
+  assert.deepEqual(storedAttachments(result.messageRowId), []);
+  const parsed = parseMimeMessage(fs.readFileSync(result.outboxPath, 'utf8'));
+  assert.equal(parsed.attachments, 0);
+  assert.ok(!parsed.text.includes('Product catalogue (PDF):'));
+});
+
+test('oversized attachment is skipped with a warning while the send continues', async () => {
+  const huge = seedProductFile({
+    filename: 'huge.pdf',
+    content: Buffer.alloc(MIME_ATTACHMENT_MAX_BYTES + 1024, 7),
+  });
+  const ids = seed();
+  declareAttachments(ids.draftId, [huge]);
+  const result = await sendDraft({ workspaceId, draftId: ids.draftId, actorType: 'user', config: ctx.config });
+  assert.equal(result.sent, true);
+  assert.deepEqual(result.attachments, []);
+  assert.equal(result.attachmentWarnings[0].code, 'MIME_ATTACHMENT_TOO_LARGE');
+  assert.deepEqual(storedAttachments(result.messageRowId), []);
+  const parsed = parseMimeMessage(fs.readFileSync(result.outboxPath, 'utf8'));
+  assert.equal(parsed.attachments, 0);
+  assert.ok(!parsed.text.includes('Product catalogue (PDF):'), 'no link for a skipped attachment');
+});
+
+test('non-PDF attachments are sent but do not add a catalogue line', async () => {
+  const png = seedProductFile({
+    filename: 'product-image.png',
+    mimeType: 'image/png',
+    content: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  });
+  const ids = seed();
+  declareAttachments(ids.draftId, [png]);
+  const result = await sendDraft({ workspaceId, draftId: ids.draftId, actorType: 'user', config: ctx.config });
+  assert.equal(result.sent, true);
+  assert.equal(result.attachments.length, 1);
+  assert.equal(result.attachments[0].mimeType, 'image/png');
+  const parsed = parseMimeMessage(fs.readFileSync(result.outboxPath, 'utf8'));
+  assert.equal(parsed.attachments, 1);
+  assert.ok(!parsed.text.includes('Product catalogue (PDF):'));
+});
+
+test('attachment helpers reject path traversal, missing rows and duplicate catalogue links', () => {
+  const uploadsDir = ctx.config.uploadsDir;
+  assert.equal(resolveUploadFilePath(uploadsDir, '../../etc/passwd'), null);
+  assert.equal(resolveUploadFilePath(uploadsDir, 'products/x/y.pdf'), path.join(path.resolve(uploadsDir), 'products/x/y.pdf'));
+  assert.equal(resolveUploadFilePath(uploadsDir, '/etc/passwd'), null);
+  assert.equal(resolveUploadFilePath(null, 'products/x/y.pdf'), null);
+
+  const missingRow = loadDraftAttachments({ workspaceId, draft: { id: 'drf_test', attachments_json: JSON.stringify([{ productFileId: 'pfl_missing', publicUrl: '/u/1' }]) }, config: ctx.config });
+  assert.deepEqual(missingRow.contents, []);
+  assert.equal(missingRow.warnings[0].code, 'attachment_missing');
+
+  const snapshot = [
+    { filename: 'a.pdf', mimeType: 'application/pdf', publicUrl: '/api/v1/public/product-files/tok-a' },
+    { filename: 'a-dup.pdf', mimeType: 'application/pdf', publicUrl: '/api/v1/public/product-files/tok-a' },
+    { filename: 'b.pdf', mimeType: 'application/pdf', publicUrl: '/api/v1/public/product-files/tok-b' },
+    { filename: 'image.png', mimeType: 'image/png', publicUrl: '/api/v1/public/product-files/tok-c' },
+  ];
+  const lines = buildCatalogueLinkLines({ draftBodyText: 'Body mentions /api/v1/public/product-files/tok-b already.', snapshot, config: ctx.config });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^Product catalogue \(PDF\): http:\/\/127\.0\.0\.1:1\/api\/v1\/public\/product-files\/tok-a$/);
 });

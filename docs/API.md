@@ -1,8 +1,8 @@
 # REST API 文档（API Reference）
 
-> 项目：ZHIRAI Europe B2B AI Outreach Platform v1.0.0
+> 项目：ZHIRAI Europe B2B AI Outreach Platform v1.1.0
 > 作者：ZHIRAI · 智睿科技 · 独立开发者
-> 事实来源：`server/routes/**` 实际实现（2026-10-22 核对）。示例响应用隔离测试实例（临时数据库 + 临时端口）实跑采集，字段按实际返回整理；敏感值已用占位符替换。
+> 事实来源：`server/routes/**` 实际实现（2026-10-23 核对）。示例响应用隔离测试实例（临时数据库 + 临时端口）实跑采集，字段按实际返回整理；敏感值已用占位符替换。
 > 机器可读描述：[openapi.yaml](./openapi.yaml)（覆盖核心端点；未覆盖范围见 §10）。
 
 ---
@@ -100,10 +100,11 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 | 409 | `CONFLICT` | 状态冲突（如活动未启用不能发送） |
 | 413 | `PAYLOAD_TOO_LARGE` / `AGENT_INPUT_TOO_LARGE` | 请求体过大 |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Content-Type 不支持 |
-| 422 | `VALIDATION_ERROR` | 业务校验失败 |
+| 422 | `VALIDATION_ERROR` | 业务校验失败（如文件类型/大小不支持、base64 非法） |
 | 429 | `RATE_LIMITED` | 触发限流（响应头 `Retry-After`） |
 | 500 | `INTERNAL_ERROR` | 未预期异常（不返回堆栈） |
 | 501 | `NOT_IMPLEMENTED` | 功能未实现 |
+| 503 | `AGENT_UNAVAILABLE` | AI 关键词生成不可用（不会伪造关键词，也不会写入部分数据） |
 
 **冲突细节示例**（实跑采集）：
 
@@ -173,7 +174,7 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 
 ## 6. 端点总览
 
-> 实测（2026-10-22，`buildRouter()` 导出的路由表）：**共 154 个「方法 × 路径」路由**。
+> 实测（2026-10-23，`buildRouter()` 导出的路由表）：**共 161 个「方法 × 路径」路由**（v1.0 为 154，新增 6 条产品文件/关键词路由 + 1 条公开文件路由）。
 
 | 域 | 端点数 | 路径前缀 |
 | --- | --- | --- |
@@ -183,7 +184,7 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 | 审计/通知/用量/运维 | 10 | `/audit`、`/notifications*`、`/usage`、`/ops/*` |
 | 企业 | 14 | `/companies*` |
 | 联系人 | 8 | `/contacts*` |
-| 产品 | 5 | `/products*` |
+| 产品 | 11 | `/products*`（含 `/files*`、`/generate-keywords`） |
 | ICP | 5 | `/icps*` |
 | 发现 | 5 | `/discovery/*` |
 | 导入导出 | 4 | `/imports*`、`/export/companies` |
@@ -197,8 +198,8 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 | 仪表盘 | 3 | `/dashboard/*` |
 | Agent | 5 | `/agents*` |
 | 任务 | 7 | `/jobs*` |
-| 公开 | 4 | `/health`、`/public/*` |
-| **合计** | **154** | — |
+| 公开 | 5 | `/health`、`/public/*`（含 `/public/product-files/:token`） |
+| **合计** | **161** | — |
 
 ---
 
@@ -345,7 +346,7 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 
 ```json
 {
-  "app": { "name": "ZHIRAI Outreach", "version": "1.0.0", "env": "development" },
+  "app": { "name": "ZHIRAI Outreach", "version": "<package.json 版本>", "env": "development" },
   "process": { "uptimeSeconds": 0, "memoryMb": 81, "node": "v24.14.0", "pid": 48808 },
   "storage": { "dbFile": "outreach.sqlite", "dbSize": 4096, "dataDir": "…" },
   "counts": { "companies": 1, "contacts": 1, "messages": 0, "jobs": 0, "auditEvents": 6 },
@@ -552,22 +553,92 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 | GET | `/products/:id` | `data.read` |
 | PATCH | `/products/:id` | `data.write` |
 | DELETE | `/products/:id` | `data.delete` |
+| POST | `/products/:id/generate-keywords` | `data.write`（20/min） |
 
-请求字段：`name`（必填）、`category`、`sku`、`description`、`specs`（对象）、`applications[]`、`materials`、`certifications[]`、`capacity`、`moq`、`pricingTerms`、`samples`、`leadTime`、`status ∈ active|draft|archived`。
+请求字段：`name`（必填）、`category`、`sku`、`description`、`specs`（对象）、`applications[]`、`materials`、`certifications[]`、`capacity`、`moq`、`pricingTerms`、`samples`、`leadTime`、`status ∈ active|draft|archived`、`keywords[]`（≤30，每项 ≤80 字符，大小写不敏感去重）。
 
-响应（实跑采集）：
+响应（实跑采集，v1.1 新增 `keywords/files/mainImageFileId/mainImageUrl`）：
 
 ```json
 {
   "id": "prd_…", "workspaceId": "wsp_…", "name": "Battery Pack Bracket",
-  "category": "EV parts", "sku": null, "description": null,
-  "specs": { "material": "Al 6061" }, "applications": [],
-  "materials": null, "certifications": ["IATF 16949"],
-  "capacity": null, "moq": null, "pricingTerms": null, "samples": null, "leadTime": null,
-  "status": "active", "createdAt": "…", "updatedAt": "…",
-  "matchCount": 0, "scoreCount": 0
+  "category": "EV parts", "specs": { "material": "Al 6061" },
+  "certifications": [], "status": "active",
+  "keywords": ["Battery Pack Bracket supplier", "EV parts distributor"],
+  "mainImageFileId": "pfl_…",
+  "mainImageUrl": "/api/v1/products/prd_…/files/pfl_…",
+  "files": [
+    { "id": "pfl_…", "filename": "main.png", "mimeType": "image/png", "sizeBytes": 70, "kind": "image", "isMain": true, "url": "/api/v1/products/prd_…/files/pfl_…", "publicUrl": null, "createdAt": "…" },
+    { "id": "pfl_…", "filename": "catalogue.pdf", "mimeType": "application/pdf", "sizeBytes": 183420, "kind": "document", "isMain": false, "url": "/api/v1/products/prd_…/files/pfl_…", "publicUrl": "/api/v1/public/product-files/<token>", "createdAt": "…" }
+  ],
+  "matchCount": 0, "scoreCount": 0, "createdAt": "…", "updatedAt": "…"
 }
 ```
+
+**`POST /products/:id/generate-keywords`**（`data.write`，20 次/分钟）
+
+- 调用 `keyword_research` Agent，基于产品名称/分类/规格/应用/材料扩展英文 B2B 关键词；保存到 `products.keywords_json` 并写审计。
+- 响应（实跑采集）：
+
+```json
+{
+  "keywords": ["Battery Pack Bracket", "EV parts", "…"],
+  "negativeKeywords": ["retail", "consumer", "used", "…"],
+  "searchQueries": ["\"Battery Pack Bracket\" (supplier OR manufacturer OR distributor)"],
+  "notes": "模拟 Provider：仅基于产品已填字段…未做搜索量/竞争度验证。",
+  "provider": "simulation"
+}
+```
+
+- Agent 不可用或输出不可用时返回 **503 `AGENT_UNAVAILABLE`**，**不会**保存伪关键词。
+
+### 8.3.1 产品文件（图片 / PDF）`/products/:id/files`
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/products/:id/files` | `data.read` | `{items: fileView[]}` |
+| POST | `/products/:id/files` | `data.write` | `{filename, mimeType, dataBase64, kind?}`；body 上限 12 MB |
+| GET | `/products/:id/files/:fileId` | `data.read` | **登录态**流式返回（`inline` + `nosniff`） |
+| DELETE | `/products/:id/files/:fileId` | `data.write` | `{deleted:true,id}`；若为主图会清空 `main_image_file_id` |
+| POST | `/products/:id/files/:fileId/main` | `data.write` | 设为产品主图（仅 `kind=image`） |
+| GET | `/api/v1/public/product-files/:token` | **公开**（120/min） | 邮件中的签名链接；无需登录，`inline` 返回 PDF/图片 |
+
+**上传请求**：
+
+```json
+{
+  "filename": "catalogue.pdf",
+  "mimeType": "application/pdf",
+  "dataBase64": "<base64 或 data URI>",
+  "kind": "document"
+}
+```
+
+**规则**：
+
+| 项 | 限制 |
+| --- | --- |
+| 允许 MIME | `image/png`、`image/jpeg`、`image/webp`、`application/pdf`；其他 → 422 |
+| 单文件 | ≤ **8 MB**（base64 非法/超限 → 422） |
+| 单产品文件数 | ≤100 |
+| 文件名 | 去目录/控制字符，最长 160 字符 |
+| 第一张图片 | 自动设为主图 |
+| 公开链接 | **仅 PDF 文档**生成 `publicUrl`（180 天签名）；图片 `publicUrl=null` |
+| 响应 | `{file: fileView}`；`fileView = {id, filename, mimeType, sizeBytes, kind, isMain, url, publicUrl, createdAt}` |
+
+**公开文件响应**（实跑采集）：
+
+```http
+GET /api/v1/public/product-files/<token>
+HTTP/1.1 200 OK
+Content-Type: application/pdf
+Content-Disposition: inline; filename="catalogue.pdf"; filename*=UTF-8''catalogue.pdf
+X-Content-Type-Options: nosniff
+
+<二进制内容>
+```
+
+无效/过期 token → **404**（不区分原因，避免枚举）。
 
 ### 8.4 ICP `/icps`
 
@@ -708,9 +779,9 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 | --- | --- | --- | --- |
 | GET | `/drafts` | `data.read` | `status,campaignId,companyId,contactId,accountId,language,search,page,pageSize` |
 | POST | `/drafts` | `data.write` | 创建草稿（手动） |
-| GET | `/drafts/:id` | `data.read` | 详情：`{draft,guard,quality,company,contact,product?,campaign?,history?}` |
+| GET | `/drafts/:id` | `data.read` | 详情：`{draft,guard,quality,attachments,company,contact,product?,campaign?,step,target,score,history,automationState,suppression}` |
 | PATCH | `/drafts/:id` | `data.write` | 更新主题/正文/语言/账户/排期 |
-| POST | `/drafts/:id/generate` | `data.write`（30/min） | 调用 Agent 生成/重写，返回 `{draft}`（`status=pending_approval`） |
+| POST | `/drafts/:id/generate` | `data.write`（30/min） | 调用 Agent 生成/重写，返回 `{draft}`（`status=pending_approval`）；有产品 PDF 时自动带附件与正文链接 |
 | POST | `/drafts/:id/approve` | `drafts.approve` | 审批通过 |
 | POST | `/drafts/:id/reject` | `drafts.approve` | `{reason}` |
 | POST | `/drafts/batch-approve` | `drafts.approve` | `{ids[]}` |
@@ -723,18 +794,31 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 { "companyId": "cmp_…", "contactId": "ctc_…", "campaignId": "cmp_…", "accountId": null, "subject": "Battery pack brackets — Rhein Auto Teile", "bodyText": "Hello Max,", "language": "en" }
 ```
 
-生成后的草稿（实跑采集，`simulation` Provider）：
+生成后的草稿（实跑采集，`simulation` Provider；v1.1 含 `attachments`）：
 
 ```json
 {
   "id": "drf_…", "status": "pending_approval", "language": "en",
   "subject": "Battery Pack Bracket for Rhein Auto Teile GmbH",
-  "bodyText": "Hello,\n\nI am reaching out because Rhein Auto Teile GmbH operates in automotive aftermarket, and Battery Pack Bracket may be relevant to your procurement needs.\n\nWould you be open to a short online call to see whether this fits your roadmap?\n\nIf you prefer not to receive further emails, just reply \"unsubscribe\" and we will remove your address.\n\nBest regards,",
+  "bodyText": "Hello,\n\n…\n\nProduct catalogue (PDF): https://your-domain/api/v1/public/product-files/<token>\n\n…",
   "quality": {}, "guard": {},
+  "attachments": [
+    { "productFileId": "pfl_…", "filename": "catalogue.pdf", "mimeType": "application/pdf", "sizeBytes": 183420, "publicUrl": "/api/v1/public/product-files/<token>" }
+  ],
   "companyName": "Rhein Auto Teile GmbH", "contactName": "Max Muster", "contactEmail": "max@rhein-auto.example",
   "createdAt": "…", "updatedAt": "…"
 }
 ```
+
+**附件规则（v1.1）**：
+
+| 项 | 规则 |
+| --- | --- |
+| 来源 | 草稿关联活动的产品（`campaign.productId`），或企业已匹配产品 |
+| 选取 | 最多 **3 个 PDF**（`mimeType='application/pdf'`）；无 PDF 时 `attachments=[]` |
+| 正文链接 | 生成提示词 v2（`outreach_writer@2`）会引用 `productFiles[].publicUrl`，最多两个唯一链接 |
+| 发送时 | 单附件 ≤ **5 MB**、总附件 ≤ **8 MB**；缺失/超限/类型不允许的附件会跳过并记录 warning（不会导致整封失败） |
+| 快照 | 发送成功后写入 `email_messages.attachments_json`（实际发送的附件列表） |
 
 > 草稿详情中的 `guard`（合规检查）与 `quality`（质量审查）在生成后由 Agent 结果填充；当前模拟 Provider 下可能为空对象，真实模型下才产生有效内容。
 
@@ -748,6 +832,8 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 | POST | `/inbox/threads/:id/reply` | `data.write`（60/min） | `{bodyText}` 发送人工回复 |
 | POST | `/inbox/threads/:id/read` | `data.read` | 标记已读 |
 | POST | `/inbox/threads/:id/classification` | `data.write` | 人工修正分类 `{label,status:"user_corrected"}` |
+
+> 说明：`email_messages.attachments_json` 保存实际发送的附件快照，但**收件箱 API 当前不回传附件列表**（消息对象不含 `attachments` 字段）；需要审计时请查数据库/发送任务结果。
 
 ### 8.10 商机、活动记录、跟进任务
 
@@ -924,7 +1010,7 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 }
 ```
 
-10 个角色：`orchestrator`、`market_research`、`company_qualification`、`contact_research`、`product_matching`、`outreach_writer`、`reply_classification`、`follow_up_planning`、`compliance_guard`、`quality_review`（每个含 `nameZh/description/promptVersion/capabilities/inputFields`）。
+11 个角色：`orchestrator`、`market_research`、`company_qualification`、`contact_research`、`product_matching`、`outreach_writer`（prompt v2）、`reply_classification`、`follow_up_planning`、`compliance_guard`、`quality_review`、`keyword_research`（每个含 `nameZh/description/promptVersion/capabilities/inputFields`）。
 
 `AGENT_CATALOG` 项（实跑采集，截断）：
 
@@ -986,7 +1072,7 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 ### 9.1 `GET /api/v1/health` ｜ 公开（120 次/分钟/IP）
 
 ```json
-{ "ok": true, "data": { "status": "ok", "version": "1.0.0", "initialized": true, "uptimeSeconds": 0, "time": "2026-10-22T19:08:45.408Z" } }
+{ "ok": true, "data": { "status": "ok", "version": "<package.json 版本>", "initialized": true, "uptimeSeconds": 0, "time": "2026-10-23T05:00:00.000Z" } }
 ```
 
 数据库不可用时 `status="degraded"`。
@@ -1013,19 +1099,39 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 
 副作用：写 `suppression_records(reason='unsubscribe')` → 该客户 `DO_NOT_CONTACT` → 取消待办与任务 → 审计（`actor_type='anonymous'`）。**幂等**：重复提交返回 `alreadyUnsubscribed:true`。
 
+### 9.5 `GET /api/v1/public/product-files/:token`（120 次/分钟/IP）
+
+邮件中的**产品 PDF 公开链接**（无需登录、无 CSRF）：
+
+- Token：`signToken` 签名的 HMAC token（payload `{t:'pfile', w:工作空间, p:产品, f:文件}`，有效期 **180 天**）。
+- 只对 `kind='document'` 的 PDF 生成；图片不生成公开链接。
+- 响应：直接流式返回文件（`Content-Type` 为存储的 MIME，`Content-Disposition: inline`，`X-Content-Type-Options: nosniff`）。
+- 无效/过期 token、跨租户 token、文件已删除 → **404**（统一文案，不泄露原因）。
+- 限流：120 次/分钟/IP。
+
+```http
+GET /api/v1/public/product-files/<token>
+HTTP/1.1 200 OK
+Content-Type: application/pdf
+Content-Disposition: inline; filename="catalogue.pdf"; filename*=UTF-8''catalogue.pdf
+X-Content-Type-Options: nosniff
+```
+
+> **隐私提示**：链接持有者无需登录即可打开 PDF；请勿把敏感资料作为产品 PDF 上传。该链接是"持有即可访问"的共享凭证，180 天后过期。
+
 ---
 
 ## 10. 覆盖范围与已知差异
 
 ### 10.1 本文覆盖
 
-- 全部已实现路由（`server/routes/index.mjs` 挂载的 25 个模块 / 154 条「方法 × 路径」）。
+- 全部已实现路由（`server/routes/index.mjs` 挂载的 26 个模块 / **161 条**「方法 × 路径」）。
 - 示例字段来自隔离测试实例实跑（临时数据库 + 临时端口），**未使用生产数据**。
-- 端到端验收（发布负责人 2026-10-22）：`node scripts/verify-safety.mjs` **15/15 通过**（审批→队列→Worker 发送、接管拦截、抑制拦截、公开退订、发送窗口恢复）；`npm test` 274 项（273 通过 / 1 跳过 / 0 失败）。
+- 验收基线（发布负责人 2026-10-23）：`npm test` **309 项（308 通过 / 1 跳过 / 0 失败）**；`node scripts/verify-safety.mjs` **16/16 通过**（在 v1.0 的审批/接管/抑制/退订之外，增加产品 PDF 上传、公开链接、草稿附件与发送链路检查）；详见 [VERIFICATION.md](./VERIFICATION.md)。
 
 ### 10.2 openapi.yaml 覆盖
 
-`docs/openapi.yaml` 覆盖：认证、工作空间、设置/凭据、企业、联系人、产品、ICP、发现、导入导出、活动、草稿审批、收件箱、商机、自动化、抑制、邮箱账户、仪表盘、Agent、任务、公开端点。**未覆盖**：`/ops/*`（运维端点）、`/notifications`、`/audit`、`/usage`（在本文档中有说明，但未写入 OpenAPI，避免与内部运维接口混淆）。
+`docs/openapi.yaml` 覆盖：认证、工作空间、设置/凭据、企业、联系人、产品（含文件与关键词）、ICP、发现、导入导出、活动、草稿审批（含附件）、收件箱、商机、自动化、抑制、邮箱账户、仪表盘、Agent、任务、公开端点（含公开 PDF 链接）。**未覆盖**：`/ops/*`（运维端点）、`/notifications`、`/audit`、`/usage`（在本文档中有说明，但未写入 OpenAPI，避免与内部运维接口混淆）。
 
 ### 10.3 已知差异与注意事项
 
@@ -1039,6 +1145,9 @@ Authorization: Bearer <你的 API Key（以 zrk_ 开头，仅在创建时显示�
 | 6 | 公开退订 token | 签名但未加密（payload 可解码出邮箱与工作空间 ID）；链接本身即凭证 |
 | 7 | 时区 | 所有时间为 UTC；发送窗口按 `Europe/Berlin` 计算 |
 | 8 | 错误 `details` | 结构因错误类型而异；客户端应以 `code`/`message` 为主 |
+| 9 | 收件箱不返回附件 | 消息对象不含 `attachments`；附件快照在 `email_messages.attachments_json`（数据库/发送任务结果） |
+| 10 | 公开 PDF 链接过期/无撤销 | token 180 天有效；**不支持按链接单独撤销**（删除文件后链接立即 404） |
+| 11 | AI 关键词依赖 Provider | Provider 不可用返回 503 `AGENT_UNAVAILABLE`，不会伪造关键词；模拟 Provider 的 `notes` 标注未验证搜索量 |
 
 ### 10.4 快速自测
 

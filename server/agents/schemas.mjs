@@ -228,6 +228,15 @@ export const OUTPUT_SCHEMAS = Object.freeze({
     strengths: list(text(300), 20),
     summary: text(2000),
   }),
+
+  // v1.1: product keyword expansion for lead discovery (see
+  // docs/MEDIA-ATTACHMENTS-CONTRACT.md section 2).
+  keyword_research: object({
+    keywords: list(text(80), 30),
+    negativeKeywords: list(text(80), 15),
+    searchQueries: list(text(200), 10),
+    notes: text(1000),
+  }),
 });
 
 export function getOutputSchema(role) {

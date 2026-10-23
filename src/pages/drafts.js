@@ -22,6 +22,7 @@ import {
   card,
   checkbox,
   confirmDialog,
+  copyButton,
   dataTable,
   emptyState,
   field,
@@ -158,6 +159,7 @@ function normalizeDetail(data, fallback) {
     draft,
     guard: root.guard !== undefined ? root.guard : draft.guard || {},
     quality: root.quality !== undefined ? root.quality : draft.quality || {},
+    attachments: Array.isArray(root.attachments) ? root.attachments : Array.isArray(draft.attachments) ? draft.attachments : [],
     company: root.company || draft.company || null,
     contact: root.contact || draft.contact || null,
     campaign: root.campaign || draft.campaign || (draft.campaignName ? { name: draft.campaignName } : null),
@@ -288,6 +290,43 @@ function openDraftDrawer(row, { reloadList, reloadApprovals, mode }) {
       editable ? el('div', 'muted', '修改后请先「保存」，再提交审批或发送。') : notice('当前状态不可编辑（已批准/已排期/已发送）。', 'info'),
     ]);
     bodyHost.appendChild(card({ title: '主题与正文', body: editorBody }));
+
+    // ---------------------------------------------------------- attachments
+    if (detail.attachments.length) {
+      const attachmentsBody = el('div', 'stack');
+      for (const attachment of detail.attachments) {
+        const absoluteUrl = attachment.publicUrl
+          ? new URL(attachment.publicUrl, window.location.origin).href
+          : '';
+        const info = el('div', 'stack');
+        append(info, [
+          el('b', '', attachment.filename || '产品资料.pdf'),
+          el('span', 'muted', `${Math.max(1, Math.round((Number(attachment.sizeBytes) || 0) / 1024))} KB · 发送时作为附件附带${absoluteUrl ? '，链接写入邮件正文' : ''}`),
+        ]);
+        const actions = el('div', 'row');
+        if (absoluteUrl) {
+          actions.appendChild(
+            button('打开链接', {
+              variant: 'ghost',
+              size: 'sm',
+              iconName: 'external',
+              onClick: () => window.open(absoluteUrl, '_blank', 'noopener,noreferrer'),
+            }),
+          );
+          actions.appendChild(copyButton(absoluteUrl, '复制链接'));
+        }
+        const row = el('div', 'row-between');
+        append(row, [info, actions]);
+        attachmentsBody.appendChild(row);
+      }
+      bodyHost.appendChild(
+        card({
+          title: '邮件附件',
+          help: '产品 PDF 会在发送时作为附件，并把可公开访问的签名链接写入邮件正文。链接在有效期内可被收件人打开，请勿放入敏感资料。',
+          body: attachmentsBody,
+        }),
+      );
+    }
 
     // --------------------------------------------------- AI evidence (guard)
     const evidenceGrid = el('div', 'page-outreach-evidence');

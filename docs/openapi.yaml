@@ -920,6 +920,111 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiEnvelope'
+  /api/v1/products/{id}/generate-keywords:
+    post:
+      tags: [products]
+      operationId: generateProductKeywords
+      summary: Generate English B2B keywords for a product (keyword_research agent)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+      responses:
+        '200':
+          description: Generated keywords (also persisted to products.keywords)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeywordGenerationEnvelope'
+        '503': { $ref: '#/components/responses/AgentUnavailable' }
+  /api/v1/products/{id}/files:
+    get:
+      tags: [products]
+      operationId: listProductFiles
+      summary: List product images and PDF documents
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Files
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductFileListEnvelope'
+    post:
+      tags: [products]
+      operationId: uploadProductFile
+      summary: Upload an image (<=8 MB) or PDF document (<=8 MB)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductFileUpload'
+      responses:
+        '200':
+          description: Uploaded file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductFileEnvelope'
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+  /api/v1/products/{id}/files/{fileId}:
+    get:
+      tags: [products]
+      operationId: downloadProductFile
+      summary: Stream an authenticated product file
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: File content (inline, nosniff)
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [products]
+      operationId: deleteProductFile
+      summary: Delete a product file (clears main image if needed)
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiEnvelope'
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/products/{id}/files/{fileId}/main:
+    post:
+      tags: [products]
+      operationId: setProductMainImage
+      summary: Set an image as the product main image
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/FileId'
+      responses:
+        '200':
+          description: Updated file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductFileEnvelope'
+        '422': { $ref: '#/components/responses/ValidationError' }
   /api/v1/icps:
     get:
       tags: [icps]
@@ -2442,6 +2547,23 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiEnvelope'
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/public/product-files/{token}:
+    get:
+      tags: [public]
+      operationId: getPublicProductFile
+      security: []
+      summary: Public signed product PDF link (no login required, 180-day token)
+      parameters:
+        - $ref: '#/components/parameters/Token'
+      responses:
+        '200':
+          description: File content (inline)
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/NotFound' }
 components:
   securitySchemes:
     cookieAuth:
@@ -2479,6 +2601,11 @@ components:
       schema: { type: string }
     Token:
       name: token
+      in: path
+      required: true
+      schema: { type: string }
+    FileId:
+      name: fileId
       in: path
       required: true
       schema: { type: string }
@@ -2530,6 +2657,12 @@ components:
       headers:
         Retry-After:
           schema: { type: integer }
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    AgentUnavailable:
+      description: AI keyword generation unavailable (no fabricated output)
       content:
         application/json:
           schema:
@@ -2741,6 +2874,82 @@ components:
         samples: { type: string }
         leadTime: { type: string }
         status: { type: string, enum: [active, draft, archived] }
+        keywords:
+          type: array
+          maxItems: 30
+          items: { type: string, maxLength: 80 }
+    ProductFile:
+      type: object
+      properties:
+        id: { type: string, example: pfl_01JABCDEFG }
+        filename: { type: string, example: catalogue.pdf }
+        mimeType: { type: string, example: application/pdf }
+        sizeBytes: { type: integer }
+        kind: { type: string, enum: [image, document] }
+        isMain: { type: boolean }
+        url: { type: string, description: Authenticated stream URL }
+        publicUrl: { type: string, nullable: true, description: Signed public URL (PDF documents only) }
+        createdAt: { type: string, format: date-time }
+    ProductFileUpload:
+      type: object
+      required: [filename, mimeType, dataBase64]
+      properties:
+        filename: { type: string, maxLength: 300 }
+        mimeType:
+          type: string
+          enum: [image/png, image/jpeg, image/webp, application/pdf]
+        dataBase64: { type: string, description: Base64 or data URI, decoded <= 8 MB }
+        kind: { type: string, enum: [image, document] }
+    ProductFileEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                file: { $ref: '#/components/schemas/ProductFile' }
+    ProductFileListEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items: { $ref: '#/components/schemas/ProductFile' }
+    KeywordGenerationEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/ApiEnvelope'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                keywords:
+                  type: array
+                  maxItems: 30
+                  items: { type: string }
+                negativeKeywords:
+                  type: array
+                  maxItems: 15
+                  items: { type: string }
+                searchQueries:
+                  type: array
+                  maxItems: 10
+                  items: { type: string }
+                notes: { type: string }
+                provider: { type: string, example: simulation }
+    Attachment:
+      type: object
+      properties:
+        productFileId: { type: string }
+        filename: { type: string }
+        mimeType: { type: string, example: application/pdf }
+        sizeBytes: { type: integer }
+        publicUrl: { type: string, nullable: true }
     IcpInput:
       type: object
       required: [name]
@@ -3034,6 +3243,10 @@ components:
           enum: [draft, pending_approval, approved, rejected, scheduled, sent, failed, discarded]
         quality: { type: object }
         guard: { type: object }
+        attachments:
+          type: array
+          maxItems: 3
+          items: { $ref: '#/components/schemas/Attachment' }
         approvedBy: { type: string, nullable: true }
         approvedAt: { type: string, format: date-time, nullable: true }
         sentMessageId: { type: string, nullable: true }

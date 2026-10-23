@@ -106,13 +106,57 @@
 
 ---
 
+## [1.1.0] - 2026-10-23
+
+**产品资料与邮件附件版本。** 在 v1.0 获客闭环上增加：产品主图/PDF 资料、AI 关键词、邮件 PDF 附件与公开签名链接、企业发现国家快捷选择。
+
+### 新增
+
+- **产品媒体**：产品主图上传（PNG/JPEG/WebP）与 PDF 资料上传；文件列表、设为主图、删除、登录态流式下载；文件存储在 `DATA_DIR/uploads/products/<workspaceId>/<productId>/`。
+- **公开 PDF 链接**：为 PDF 文档生成 HMAC 签名公开链接（`/api/v1/public/product-files/:token`，**180 天**有效，按租户/产品/文件校验）；收件人无需登录即可在邮件中打开 PDF。
+- **AI 关键词**：新增第 11 个 Agent 角色 `keyword_research`（`server/agents/prompts/keyword_research.md`）；`POST /products/:id/generate-keywords` 基于产品名称/分类/规格/应用/材料扩展英文 B2B 关键词、否定词与搜索式，保存到 `products.keywords_json`；Provider 不可用返回 503 `AGENT_UNAVAILABLE`，不伪造输出。
+- **关键词编辑**：`PATCH /products/:id` 接受 `keywords[]`（≤30、每项 ≤80 字符、大小写不敏感去重）；产品列表/详情返回 `keywords/files/mainImageFileId/mainImageUrl`。
+- **开发信自动附件**：`outreach_writer` 提示词升级到 **v2**（支持 `productFiles[].publicUrl`）；生成草稿时自动选取最多 3 个产品 PDF 写入 `message_drafts.attachments_json`，并在正文（退订段之前）写公开链接；草稿详情返回 `attachments`。
+- **邮件附件发送**：MIME 构建支持 `multipart/mixed` 附件；单附件 ≤5 MB、总附件 ≤8 MB、MIME 层 ≤20 个；缺失/超限/类型不允许的附件跳过并记录 warning；发送成功把附件快照写入 `email_messages.attachments_json`。
+- **企业发现**：目标国家支持「全选欧洲 / 随机 8 国 / 清空」；**不选国家 = 全部市场**；选择产品后自动带出产品关键词，支持「AI 生成关键词」。
+- **数据迁移**：`server/db/migrations/002_product_media_attachments.sql`（`products.keywords_json/main_image_file_id`、`product_files.kind`、`message_drafts.attachments_json`、`email_messages.attachments_json`），**全部为 `ALTER TABLE ADD COLUMN`，业务表数量不变（40；含迁移表 41）**。
+- **API**：新增 6 条产品文件/关键词路由 + 1 条公开文件路由，路由总数 **154 → 161**。
+
+### 变更
+
+- Agent 角色：**10 → 11**（新增 `keyword_research`；`outreach_writer` 提示词 v1 → **v2**）。
+- 产品详情接口由"纯行数据"改为带 `files/mainImageUrl/keywords` 的装饰视图。
+- 自动化测试：**274 → 309**；安全/媒体 E2E：**15/15 → 16/16**。
+
+### 安全
+
+- 上传白名单：PNG/JPEG/WebP/PDF；单文件 ≤8 MB；请求体上限 12 MB；base64 严格校验；文件名清洗；存储路径防目录遍历。
+- 公开链接只对 PDF 文档签发；无效/过期/跨租户 token 统一 404；限流 120/min/IP；删除文件后链接立即失效。
+- 附件发送 MIME 白名单与大小上限；跳过不安全/超限附件并记录 warning。
+- **隐私提示**：公开 PDF 链接是"持有即可访问"的共享凭证（180 天），请勿上传敏感资料；数据库备份不含 `uploads/`，需单独备份。
+
+### 验收（2026-10-23）
+
+- `npm test`（`node --test --test-force-exit "tests/**/*.test.mjs"`，Node v24.14.0）：**309 项，308 通过、1 跳过、0 失败**（约 3.4s）。
+- `node scripts/verify-safety.mjs`：**16/16 通过**（新增产品 PDF 上传、公开链接、草稿附件、发送附件快照链路）。
+- 媒体/附件/关键词相关新增测试：`data-product-files`、`agents-keyword`、`crm-drafts`、`jobs-send-pipeline`、`mail-mime` 等（详见 `docs/VERIFICATION.md`，由发布负责人维护）。
+- 仍保留未验证项：真实外网 SMTP/IMAP、真实模型 API、上传文件病毒扫描、公开链接在真实邮件客户端的表现、备份恢复演练、压测、法律审查。
+
+### 升级说明（v1.0 → v1.1）
+
+1. 备份数据库 **并复制 `server/data/uploads/`**。
+2. 停服务 → 替换代码 → `npm run init-db`（自动应用 `002`）→ `npm start`。
+3. `PUBLIC_BASE_URL` 必须是真实 HTTPS 地址，否则邮件中的 PDF 公开链接不可用。
+4. **发布清单**：将 `package.json` 与 `server/core/license-info.mjs` 的 `version` 同步更新为 `1.1.0`（当前工作区代码仍为 `1.0.0`）。
+
+---
+
 ## [Unreleased]
 
 计划内容见 [docs/ROADMAP.md](docs/ROADMAP.md)：
 
-- v1.1：robots.txt 与抓取限速、退信/投诉自动抑制、占位符校验、DSAR 工具、保留清理任务、测试发送、域名认证指引、多语言模板、批量操作增强、报表。
-- v1.2：搜索/补全适配器实装、官网站点抽取增强、角色推断、企业合并、数据质量看板、XLSX 导入评估。
-- v1.3：工作空间切换、权限细化、通知渠道、Webhook、MCP Server、OpenAPI 完善、附件发送。
+- v1.2：robots.txt 与抓取限速、退信/投诉自动抑制闭环、占位符校验、DSAR 工具、保留清理任务强化、测试发送、域名认证指引、多语言模板、批量操作增强、报表、搜索/补全适配器实装、XLSX 导入评估。
+- v1.3：工作空间切换、权限细化、通知渠道、Webhook、MCP Server、OpenAPI 完善、公开链接按条撤销。
 - v2.0（条件触发）：PostgreSQL 支持、独立 Worker、多副本、插件机制、多租户 SaaS。
 
 ---

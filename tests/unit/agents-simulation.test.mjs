@@ -33,8 +33,8 @@ import { all } from '../../server/core/db.mjs';
 const env = createAgentTestEnv();
 after(() => env.cleanup());
 
-test('catalogue exposes the ten contracted roles without prompt bodies', () => {
-  assert.equal(AGENT_CATALOG.length, 10);
+test('catalogue exposes the eleven contracted roles without prompt bodies', () => {
+  assert.equal(AGENT_CATALOG.length, 11);
   assert.deepEqual(
     AGENT_CATALOG.map((entry) => entry.role),
     [...AGENT_ROLES],
@@ -70,13 +70,13 @@ test('simulation provider produces schema-valid output for every role and record
     assert.equal(result.usage.provider, 'simulation');
     assert.equal(result.usage.isSimulation, true);
     assert.equal(result.usage.costEstimate, 0, `${role}: simulation cost must be 0`);
-    assert.equal(result.usage.promptVersion, `${role}@1`);
+    assert.equal(result.usage.promptVersion, AGENT_CATALOG.find((entry) => entry.role === role).promptVersion);
 
     const execution = getExecution(env.workspaceId, result.executionId);
     assert.equal(execution.status, 'succeeded');
     assert.equal(execution.role, role);
     assert.equal(execution.provider, 'simulation');
-    assert.equal(execution.promptVersion, `${role}@1`);
+    assert.equal(execution.promptVersion, AGENT_CATALOG.find((entry) => entry.role === role).promptVersion);
     assert.equal(execution.costEstimate, 0);
     assert.equal(execution.error, null);
     assert.ok(execution.finishedAt);
@@ -373,6 +373,44 @@ test('outreach flags unlocalizable Chinese template text instead of silently mix
   });
   assert.ok(output.riskNotes.some((note) => note.includes('无法本地化')));
   assert.equal(validateOutput(output, OUTPUT_SCHEMAS.outreach_writer).ok, true);
+});
+
+test('outreach appends product catalogue PDF links from productFiles before the unsubscribe sentence', () => {
+  const productFiles = [
+    { filename: 'catalogue-a.pdf', publicUrl: 'https://zhirai.cloud/api/v1/public/product-files/token-a' },
+    { filename: 'catalogue-b.pdf', publicUrl: 'https://zhirai.cloud/api/v1/public/product-files/token-b' },
+    { filename: 'duplicate.pdf', publicUrl: 'https://zhirai.cloud/api/v1/public/product-files/token-a' },
+    { filename: 'third.pdf', publicUrl: 'https://zhirai.cloud/api/v1/public/product-files/token-c' },
+    { filename: 'invalid.txt', publicUrl: 'javascript:alert(1)' },
+  ];
+  const steps = [
+    undefined,
+    { subjectTemplate: 'EV brackets for {{companyName}}', bodyTemplate: 'Hi {{contactFirstName}}, our product may fit your programme.' },
+  ];
+  for (const step of steps) {
+    const output = simulateRole('outreach_writer', {
+      company: { name: 'Flanders EV Solutions NV', industry: 'EV battery systems' },
+      contact: { fullName: 'Jan Peeters' },
+      product: { name: 'EV battery brackets' },
+      language: 'en',
+      settings: { includeUnsubscribe: true },
+      productFiles,
+      step,
+    });
+    const linkLines = output.body.match(/Product catalogue \(PDF\): \S+/g) || [];
+    assert.equal(linkLines.length, 2, 'at most two unique PDF links');
+    assert.equal(new Set(linkLines).size, 2, 'duplicate URLs are removed');
+    assert.ok(output.body.includes('token-a'));
+    assert.ok(output.body.includes('token-b'));
+    assert.equal(output.body.includes('token-c'), false, 'more than two links are truncated');
+    assert.equal(/javascript:/i.test(output.body), false, 'non-http URLs are ignored');
+    assert.ok(
+      output.body.indexOf('Product catalogue (PDF):') < output.body.indexOf('If you prefer not to receive'),
+      'PDF links must appear before the unsubscribe sentence',
+    );
+    assert.ok(output.claims.some((claim) => claim.source === 'productFiles.publicUrl'));
+    assert.equal(validateOutput(output, OUTPUT_SCHEMAS.outreach_writer).ok, true);
+  }
 });
 
 test('outreach simulation keeps the requested language and never invents a translated product name', () => {

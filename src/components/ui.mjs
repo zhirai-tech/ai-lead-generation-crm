@@ -558,8 +558,8 @@ export function confirmDialog({ title = '确认操作', message = '', confirmTex
       size: 'sm',
       body: el('p', 'dim', message),
       actions: [
-        { label: cancelText, onClick: (done) => { done(); finish(false); } },
-        { label: confirmText, variant: danger ? 'danger' : 'primary', onClick: (done) => { done(); finish(true); } },
+        { label: cancelText, onClick: (done) => { finish(false); done(); } },
+        { label: confirmText, variant: danger ? 'danger' : 'primary', onClick: (done) => { finish(true); done(); } },
       ],
       onClose: () => finish(false),
     });

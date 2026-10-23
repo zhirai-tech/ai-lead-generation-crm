@@ -691,6 +691,22 @@ function buildOutreach(input) {
   if (rawLeadTime && !leadTime) omittedFacts.push(`交期：${rawLeadTime}`);
   if (omittedCertifications.length) omittedFacts.push(`认证：${omittedCertifications.join('、')}`);
 
+  // v1.1: product catalogue PDF links are supplied by t-crm/product-files.
+  // Only public URLs present in the input are used; a URL is never invented.
+  const rawProductFiles = a(input.productFiles);
+  const validCatalogueUrls = [];
+  const seenCatalogueUrls = new Set();
+  for (const file of rawProductFiles) {
+    const entry = o(file);
+    const publicUrl = s(entry.publicUrl || entry.public_url || entry.url);
+    if (!publicUrl || !/^https?:\/\/\S+$/i.test(publicUrl)) continue;
+    const key = publicUrl.toLowerCase();
+    if (seenCatalogueUrls.has(key)) continue;
+    seenCatalogueUrls.add(key);
+    validCatalogueUrls.push(publicUrl);
+  }
+  const catalogueLinks = validCatalogueUrls.slice(0, 2);
+
   // A Chinese product name inside an English/German email reads badly; fall
   // back to a neutral product reference and flag it in riskNotes instead.
   const cjkProductNameOmitted = Boolean(productName) && language !== 'zh' && containsCjk(productName);
@@ -718,6 +734,7 @@ function buildOutreach(input) {
 
   let body = '';
   let unlocalizableTemplateText = false;
+  let usedCatalogueLinks = [];
   if (bodyTemplate) {
     const rendered = applyTemplate(bodyTemplate, values);
     for (const key of rendered.used) usedKeys.add(key);
@@ -746,6 +763,8 @@ function buildOutreach(input) {
       if (factLine) sections.push(factLine);
       const closingDetected = hasClosingPhrase(renderedText);
       if (!closingDetected && !/[?？]/.test(renderedText)) sections.push(template.ask);
+      usedCatalogueLinks = catalogueLinks.filter((url) => !renderedText.includes(url));
+      for (const url of usedCatalogueLinks) sections.push(`Product catalogue (PDF): ${url}`);
       if (includeUnsubscribe && !isUnsubscribeText(renderedText)) sections.push(template.unsubscribe);
       const closing = composeClosing(template, values, renderedText);
       if (closing) sections.push(closing);
@@ -758,6 +777,10 @@ function buildOutreach(input) {
     const sections = [template.greeting, template.intro(resolved.company, resolved.industry, resolved.product)];
     if (factLine) sections.push(factLine);
     sections.push(template.ask);
+    if (catalogueLinks.length) {
+      usedCatalogueLinks = [...catalogueLinks];
+      for (const url of catalogueLinks) sections.push(`Product catalogue (PDF): ${url}`);
+    }
     if (includeUnsubscribe) sections.push(template.unsubscribe);
     sections.push(composeClosing(template, values));
     body = sections.join('\n\n');
@@ -818,6 +841,10 @@ function buildOutreach(input) {
     pushClaim(`产能仅来自产品资料：${capacity}`, 'product.capacity');
     pushPoint(`产能：${capacity}`);
   }
+  for (const url of usedCatalogueLinks) {
+    pushClaim(`正文包含产品目录 PDF 公开链接：${url}`, 'productFiles.publicUrl');
+    pushPoint(`产品目录 PDF：${url}`);
+  }
 
   const riskNotes = ['当前为内置离线模拟 Provider 生成，未调用外部模型，也未做外部事实核验。'];
   if (missingKeys.size) {
@@ -836,6 +863,11 @@ function buildOutreach(input) {
     riskNotes.push('活动步骤正文包含无法本地化的中文内容，已保留原文，请人工翻译后再发送。');
   }
   if (!rawCertifications.length && !rawMoq && !rawLeadTime) riskNotes.push('产品资料未包含认证/MOQ/交期，邮件未做相关承诺。');
+  if (rawProductFiles.length && !usedCatalogueLinks.length) {
+    riskNotes.push('输入 productFiles 没有可公开访问的 http(s) URL，正文未添加产品目录链接。');
+  } else if (validCatalogueUrls.length > 2) {
+    riskNotes.push('产品目录链接超过 2 个，正文仅使用前 2 个公开链接。');
+  }
   riskNotes.push('发送前请人工复核价格、交期、产能等未被输入覆盖的信息。');
 
   return {
@@ -1071,6 +1103,206 @@ function buildQualityReview(input) {
   };
 }
 
+// ------------------------------------------------------- keyword research (v1.1)
+const B2B_KEYWORD_MODIFIERS = Object.freeze([
+  'supplier',
+  'manufacturer',
+  'exporter',
+  'importer',
+  'distributor',
+  'wholesaler',
+  'OEM',
+  'aftermarket',
+  'B2B',
+  'sourcing',
+  'procurement',
+  'wholesale',
+  'bulk',
+]);
+
+const GENERIC_NEGATIVE_KEYWORDS = Object.freeze([
+  'retail',
+  'consumer',
+  'used',
+  'second hand',
+  'repair',
+  'tutorial',
+  'job',
+  'vacancy',
+  'free',
+  'diy',
+  'wikipedia',
+  'news',
+]);
+
+const KEYWORD_STOP_WORDS = new Set([
+  'with',
+  'from',
+  'that',
+  'this',
+  'your',
+  'their',
+  'where',
+  'when',
+  'which',
+  'have',
+  'has',
+  'are',
+  'for',
+  'and',
+  'the',
+  'our',
+  'its',
+  'into',
+  'used',
+  'using',
+  'made',
+  'high',
+  'best',
+  'good',
+  'more',
+  'than',
+  'other',
+  'such',
+  'also',
+  'can',
+  'will',
+  'suitable',
+  'designed',
+  'including',
+]);
+
+function uniqueKeywordList(values, limit = 30, maxLength = 80) {
+  const seen = new Set();
+  const output = [];
+  for (const value of values) {
+    const text = tidyText(String(value ?? '')).slice(0, maxLength).trim();
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(text);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+function flattenSpecTerms(specs, limit = 8) {
+  const output = [];
+  const source = o(specs);
+  for (const value of Object.values(source)) {
+    if (typeof value === 'string' || typeof value === 'number') {
+      if (typeof value === 'number') output.push(String(value));
+      else output.push(...String(value).split(/[;,/|]/).map((item) => item.trim()).filter(Boolean));
+    } else if (Array.isArray(value)) {
+      output.push(...value.filter((item) => typeof item === 'string' || typeof item === 'number').map(String));
+    }
+    if (output.length >= limit * 3) break;
+  }
+  return strings(output, limit * 3).filter((item) => !containsCjk(item)).slice(0, limit);
+}
+
+function englishDescriptionTerms(description, limit = 6) {
+  const words = String(description || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((word) => word.length >= 4 && !KEYWORD_STOP_WORDS.has(word));
+  return [...new Set(words)].slice(0, limit);
+}
+
+function buildKeywordResearch(input) {
+  const product = o(input.product || a(input.products)[0]);
+  const icp = o(input.icp);
+  const name = s(product.name);
+  const category = s(product.category);
+  const description = s(product.description);
+  const applications = strings(product.applications, 10);
+  const materialTerms = (Array.isArray(product.materials) ? product.materials : [product.materials])
+    .map((item) => s(item))
+    .filter(Boolean);
+  const specTerms = flattenSpecTerms(product.specs, 8);
+
+  const englishBases = [];
+  const pushBase = (term, max = 80) => {
+    const text = s(term).slice(0, max);
+    if (text && !containsCjk(text)) englishBases.push(text);
+  };
+  pushBase(name);
+  pushBase(category);
+  applications.forEach((term) => pushBase(term));
+  materialTerms.forEach((term) => pushBase(term));
+  specTerms.forEach((term) => pushBase(term));
+  englishDescriptionTerms(description, 6).forEach((term) => pushBase(term));
+  const uniqueBases = uniqueKeywordList(englishBases, 12, 80);
+
+  const rawKeywords = [];
+  // A Chinese product name keeps its original form, paired with English category words.
+  if (name && containsCjk(name)) rawKeywords.push(name);
+  rawKeywords.push(...uniqueBases.slice(0, 10));
+  const primaryBase = uniqueBases[0] || '';
+  const categoryBase = category && !containsCjk(category) ? category : primaryBase;
+  if (categoryBase) {
+    rawKeywords.push(`${categoryBase} supplier`, `${categoryBase} manufacturer`, `${categoryBase} distributor`);
+  }
+  for (const base of uniqueBases.slice(0, 6)) {
+    for (const modifier of B2B_KEYWORD_MODIFIERS) {
+      rawKeywords.push(`${base} ${modifier}`);
+    }
+    if (rawKeywords.length >= 60) break;
+  }
+  if (!rawKeywords.length) {
+    rawKeywords.push('B2B supplier', 'industrial manufacturer', 'product distributor', 'OEM sourcing', 'industrial exporter');
+  }
+  const keywords = uniqueKeywordList(rawKeywords, 30, 80);
+
+  const negativeKeywords = uniqueKeywordList(
+    [...strings(icp.excludeKeywords, 10), ...GENERIC_NEGATIVE_KEYWORDS],
+    15,
+    80,
+  );
+
+  const primary = primaryBase || 'industrial product';
+  const secondary = uniqueBases[1] || '';
+  const queryCandidates = [];
+  queryCandidates.push(`"${primary}" (supplier OR manufacturer OR distributor)`);
+  if (secondary) queryCandidates.push(`"${primary}" "${secondary}" supplier`);
+  if (categoryBase) queryCandidates.push(`"${categoryBase}" (importer OR wholesaler OR OEM)`);
+  queryCandidates.push(`${primary} aftermarket distributor -retail -used`);
+  queryCandidates.push(`"${primary}" B2B sourcing Europe`);
+  for (const application of applications.filter((item) => !containsCjk(item)).slice(0, 2)) {
+    queryCandidates.push(`"${application}" "${primary}" supplier`);
+  }
+  for (const material of materialTerms.filter((item) => !containsCjk(item)).slice(0, 1)) {
+    queryCandidates.push(`${material} ${primary} manufacturer`);
+  }
+  const searchQueries = uniqueKeywordList(queryCandidates, 10, 200);
+
+  const filledFields = [];
+  if (name) filledFields.push('名称');
+  if (category) filledFields.push('分类');
+  if (description) filledFields.push('描述');
+  if (applications.length) filledFields.push('应用场景');
+  if (materialTerms.length || specTerms.length) filledFields.push('材料/规格');
+  const missingFields = [];
+  if (!name) missingFields.push('名称');
+  if (!category) missingFields.push('分类');
+  if (!description) missingFields.push('描述');
+  if (!applications.length) missingFields.push('应用场景');
+  if (!materialTerms.length && !specTerms.length) missingFields.push('材料/规格');
+  const missingNote = missingFields.length ? ` 缺少字段：${missingFields.join('、')}，补充后重新生成会更准确。` : '';
+
+  return {
+    keywords,
+    negativeKeywords,
+    searchQueries,
+    notes: cut(
+      `模拟 Provider：仅基于产品已填字段（${filledFields.length ? filledFields.join('、') : '无'}）扩展英文 B2B 关键词，未调用外部模型，也未做搜索量/竞争度验证。${missingNote}`,
+      1000,
+    ),
+  };
+}
+
 const BUILDERS = {
   orchestrator: buildOrchestrator,
   market_research: buildMarketResearch,
@@ -1082,6 +1314,7 @@ const BUILDERS = {
   follow_up_planning: buildFollowUpPlanning,
   compliance_guard: buildCompliance,
   quality_review: buildQualityReview,
+  keyword_research: buildKeywordResearch,
 };
 
 /** Build a structurally valid, deterministic sample output for one role. */

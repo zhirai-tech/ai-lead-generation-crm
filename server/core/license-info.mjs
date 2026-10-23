@@ -3,7 +3,7 @@ export const LICENSE_INFO = {
   product: {
     name: 'ZHIRAI Europe B2B AI Outreach Platform',
     nameZh: '智睿欧洲 B2B AI 外贸获客平台',
-    version: '1.0.0',
+    version: '1.1.0',
     author: 'ZHIRAI · 智睿科技 · 独立开发者',
     copyright: '© 2026 智睿科技 保留所有权利。',
     license: 'Proprietary / UNLICENSED（商业授权）',

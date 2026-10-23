@@ -16,9 +16,16 @@ import {
   formatRfc5322Date,
   generateMessageId,
   parseAddressHeader,
+  parseContentDisposition,
   parseMimeMessage,
   parseHeaderBlock,
+  prepareAttachments,
+  sanitizeAttachmentFilename,
+  splitMultipart,
+  splitRawMessage,
   textToHtml,
+  MIME_ATTACHMENT_MAX_BYTES,
+  MIME_ATTACHMENTS_TOTAL_MAX_BYTES,
 } from '../../server/mail/mime.mjs';
 
 const CHINESE_SUBJECT = '合作询价：工业零部件供应（2026 春季）';
@@ -149,4 +156,125 @@ test('HTML escaping and plain-text to HTML conversion', () => {
   assert.ok(!html.includes('<script>'));
   assert.ok(html.includes('&lt;script&gt;'));
   assert.ok(html.includes('<br>'));
+});
+
+// ------------------------------------------------------------------ attachments
+const PDF_BYTES = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n\u0000\u00ff binary\n%%EOF\n', 'binary');
+
+test('attachments build multipart/mixed with a nested multipart/alternative body', () => {
+  const built = buildSample({ attachments: [{ filename: 'catalogue.pdf', mimeType: 'application/pdf', content: PDF_BYTES }] });
+  assert.match(built.raw, /^Content-Type: multipart\/mixed; boundary="[^"]+"$/m);
+  assert.ok(built.mixedBoundary);
+  assert.ok(built.alternativeBoundary);
+  assert.match(built.raw, /Content-Disposition: attachment; filename="catalogue\.pdf"/);
+  assert.match(built.raw, /Content-Type: application\/pdf; name="catalogue\.pdf"/);
+  assert.equal(built.attachments.length, 1);
+  assert.equal(built.attachments[0].sizeBytes, PDF_BYTES.length);
+
+  // Structural check: first mixed part is the alternative body, second is the PDF.
+  const { bodyText } = splitRawMessage(built.raw);
+  const parts = splitMultipart(bodyText, built.mixedBoundary);
+  assert.equal(parts.length, 2);
+  assert.match(parts[0], /Content-Type: multipart\/alternative; boundary="/);
+  const attachmentPart = splitRawMessage(parts[1]);
+  assert.match(attachmentPart.headerText, /Content-Disposition: attachment; filename="catalogue\.pdf"/);
+  const base64Body = attachmentPart.bodyText.replace(/\r\n/g, '\n').trim();
+  assert.ok(base64Body.split('\n').every((line) => line.length <= 76), 'base64 lines are <= 76 chars');
+  assert.deepEqual(Buffer.from(base64Body.replace(/\s+/g, ''), 'base64'), PDF_BYTES);
+
+  // Parser round-trip: body text/html preserved and the binary attachment decodes.
+  const parsed = parseMimeMessage(built.raw);
+  assert.equal(parsed.attachments, 1);
+  assert.equal(parsed.attachment.filename, 'catalogue.pdf');
+  assert.equal(parsed.attachment.mimeType, 'application/pdf');
+  assert.deepEqual(parsed.attachment.content, PDF_BYTES);
+  assert.ok(parsed.text.includes('中德合资的工业零部件供应商'));
+});
+
+test('no attachments keeps the previous multipart/alternative structure', () => {
+  const built = buildSample();
+  assert.match(built.raw, /^Content-Type: multipart\/alternative; boundary="/m);
+  assert.equal(built.mixedBoundary, null);
+  assert.deepEqual(built.attachments, []);
+});
+
+test('non-ASCII attachment filenames use RFC 2231 encoding and parse back', () => {
+  const built = buildSample({ attachments: [{ filename: '产品目录 2026.pdf', mimeType: 'application/pdf', content: PDF_BYTES }] });
+  assert.match(built.raw, /filename\*=UTF-8''%E4%BA%A7%E5%93%81%E7%9B%AE%E5%BD%95%202026\.pdf/);
+  const parsed = parseMimeMessage(built.raw);
+  assert.equal(parsed.attachment.filename, '产品目录 2026.pdf');
+});
+
+test('attachment filenames are sanitised (path traversal, CRLF injection, NUL)', () => {
+  assert.equal(sanitizeAttachmentFilename('../../etc/passwd'), 'passwd');
+  assert.equal(sanitizeAttachmentFilename('C:\\Windows\\evil.pdf'), 'evil.pdf');
+  const sanitised = sanitizeAttachmentFilename('evil\r\nBcc: attacker@evil.example\x00.pdf');
+  assert.ok(!/[\r\n\u0000]/.test(sanitised), 'control characters removed');
+  assert.ok(sanitised.endsWith('.pdf'));
+  const built = buildSample({
+    attachments: [{ filename: 'evil\r\nBcc: attacker@evil.example\x00.pdf', mimeType: 'application/pdf', content: PDF_BYTES }],
+  });
+  assert.ok(!/^Bcc:/m.test(built.raw), 'no injected Bcc header');
+  const parsed = parseMimeMessage(built.raw);
+  assert.ok(parsed.attachment.filename.endsWith('.pdf'));
+  assert.equal(parseContentDisposition('attachment; filename="a b.pdf"').params.filename, 'a b.pdf');
+});
+
+test('prepareAttachments enforces per-file and total limits with warnings', () => {
+  const small = { filename: 'a.pdf', mimeType: 'application/pdf', content: Buffer.alloc(1024, 1) };
+  const oversized = { filename: 'huge.pdf', mimeType: 'application/pdf', content: Buffer.alloc(MIME_ATTACHMENT_MAX_BYTES + 1, 1) };
+  const invalid = { filename: 'bad.pdf', mimeType: 'application/pdf', content: 'not-a-buffer' };
+  const empty = { filename: 'empty.pdf', mimeType: 'application/pdf', content: Buffer.alloc(0) };
+
+  const one = prepareAttachments([small]);
+  assert.equal(one.attachments.length, 1);
+  assert.equal(one.warnings.length, 0);
+  assert.equal(one.totalBytes, 1024);
+
+  const rejected = prepareAttachments([oversized, invalid, empty]);
+  assert.equal(rejected.attachments.length, 0);
+  assert.deepEqual(rejected.warnings.map((warning) => warning.code), [
+    'MIME_ATTACHMENT_TOO_LARGE',
+    'MIME_INVALID_ATTACHMENT',
+    'MIME_EMPTY_ATTACHMENT',
+  ]);
+
+  // Total > 8MB: first ~4.5MB file accepted, second skipped.
+  const chunk = () => Buffer.alloc(4_600_000, 2);
+  const total = prepareAttachments([
+    { filename: 'one.pdf', mimeType: 'application/pdf', content: chunk() },
+    { filename: 'two.pdf', mimeType: 'application/pdf', content: chunk() },
+  ]);
+  assert.equal(total.attachments.length, 1);
+  assert.equal(total.attachments[0].filename, 'one.pdf');
+  assert.equal(total.warnings[0].code, 'MIME_ATTACHMENTS_TOTAL_TOO_LARGE');
+  assert.ok(total.totalBytes <= MIME_ATTACHMENTS_TOTAL_MAX_BYTES);
+
+  assert.throws(() => prepareAttachments('nope'), (error) => error.code === 'MIME_INVALID_ATTACHMENTS');
+  assert.throws(
+    () => prepareAttachments(Array.from({ length: 21 }, (_, index) => ({ filename: `f${index}.pdf`, content: Buffer.from('x') }))),
+    (error) => error.code === 'MIME_TOO_MANY_ATTACHMENTS',
+  );
+});
+
+test('buildMimeMessage rejects oversized attachments when called directly', () => {
+  assert.throws(
+    () => buildSample({ attachments: [{ filename: 'huge.pdf', mimeType: 'application/pdf', content: Buffer.alloc(MIME_ATTACHMENT_MAX_BYTES + 1) }] }),
+    (error) => error.code === 'MIME_ATTACHMENT_REJECTED' && /单文件上限/.test(error.message),
+  );
+});
+
+test('multiple attachments are all encoded with scoped boundaries', () => {
+  const built = buildSample({
+    attachments: [
+      { filename: 'catalogue.pdf', mimeType: 'application/pdf', content: PDF_BYTES },
+      { filename: 'spec.png', mimeType: 'image/png', content: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+    ],
+  });
+  const parsed = parseMimeMessage(built.raw);
+  assert.equal(parsed.attachments, 2);
+  assert.deepEqual(parsed.attachmentList.map((item) => item.filename), ['catalogue.pdf', 'spec.png']);
+  assert.deepEqual(parsed.attachmentList[1].content, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const closingBoundaries = built.raw.split(`--${built.mixedBoundary}--`).length - 1;
+  assert.equal(closingBoundaries, 1);
 });

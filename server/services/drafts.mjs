@@ -8,6 +8,7 @@
 import { AppError, conflict, notFound, validationError } from '../core/errors.mjs';
 import { recordAudit } from '../core/audit.mjs';
 import { asString } from '../core/validate.mjs';
+import { config } from '../config.mjs';
 import { id } from '../core/ids.mjs';
 import { nowIso, dayKey } from '../core/time.mjs';
 import { getSettings } from './settings.mjs';
@@ -35,6 +36,81 @@ import { getCampaignSendContext } from './campaigns.mjs';
 export const DRAFT_STATUSES = ['draft', 'pending_approval', 'approved', 'rejected', 'scheduled', 'sent', 'failed', 'discarded'];
 export const EDITABLE_STATUSES = ['draft', 'pending_approval', 'rejected'];
 const APPROVABLE_STATUSES = ['draft', 'pending_approval', 'rejected'];
+/** Maximum number of product PDFs attached to one outreach draft. */
+export const MAX_DRAFT_ATTACHMENTS = 3;
+
+// ------------------------------------------------- product PDF attachment bridge
+/**
+ * Test seam (same pattern as agent-client): lets tests provide deterministic
+ * product files without depending on the t-data module being present.
+ */
+let productFilesLoaderOverride = null;
+
+export function setProductFilesLoaderForTests(loader) {
+  productFilesLoaderOverride = typeof loader === 'function' ? loader : null;
+}
+
+export function resetProductFilesLoaderForTests() {
+  productFilesLoaderOverride = null;
+}
+
+/** Keep only PDFs that can actually be sent, cap at 3, drop incomplete rows. */
+function normalizeProductAttachments(files) {
+  if (!Array.isArray(files)) return [];
+  const normalized = [];
+  const seen = new Set();
+  for (const file of files) {
+    if (!file || typeof file !== 'object') continue;
+    const mimeType = String(file.mimeType ?? file.mime_type ?? '').toLowerCase();
+    if (mimeType !== 'application/pdf') continue;
+    const publicUrl = typeof file.publicUrl === 'string' ? file.publicUrl.trim() : '';
+    const productFileId = file.productFileId ?? file.id ?? null;
+    if (!publicUrl || !productFileId || seen.has(productFileId)) continue;
+    seen.add(productFileId);
+    normalized.push({
+      productFileId,
+      filename: String(file.filename || 'document.pdf').slice(0, 255),
+      mimeType: 'application/pdf',
+      sizeBytes: Number(file.sizeBytes ?? file.size_bytes ?? 0) || 0,
+      publicUrl,
+    });
+    if (normalized.length >= MAX_DRAFT_ATTACHMENTS) break;
+  }
+  return normalized;
+}
+
+/** Absolute public URL for a stored product PDF (used inside email bodies). */
+function absolutePublicUrl(url) {
+  const value = String(url || '');
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  const base = config.publicBaseUrl.replace(/\/+$/, '');
+  return `${base}${value.startsWith('/') ? value : `/${value}`}`;
+}
+
+/**
+ * Load the product's PDFs for an email. The t-data module is imported
+ * dynamically and any failure (module not deployed yet, query error) degrades to
+ * "no attachments" so draft generation never breaks because of media.
+ */
+async function loadProductAttachments(workspaceId, productId) {
+  if (!productId) return [];
+  if (productFilesLoaderOverride) {
+    try {
+      return normalizeProductAttachments(await productFilesLoaderOverride(workspaceId, productId));
+    } catch {
+      return [];
+    }
+  }
+  try {
+    const module = await import('./product-files.mjs');
+    const listForEmail = module?.listProductFilesForEmail;
+    if (typeof listForEmail !== 'function') return [];
+    return normalizeProductAttachments(await listForEmail(workspaceId, productId));
+  } catch {
+    return [];
+  }
+}
 
 function normalizeActor(actor = {}) {
   return {
@@ -153,6 +229,7 @@ export function detail(workspaceId, draftId) {
     draft,
     guard: draft.guard,
     quality: draft.quality,
+    attachments: draft.attachments,
     company,
     contact,
     campaign: sendContext?.campaign || null,
@@ -376,6 +453,14 @@ export async function generateDraft({ workspaceId, draftId, actorType = 'system'
   const settings = getSettings(workspaceId);
   const context = buildGenerationContext(workspaceId, draft);
   const language = context.step?.language || draft.language || settings.outreach?.defaultLanguage || 'en';
+  // Product PDFs: load before the model call so the writer can reference the
+  // public links in the body. Missing media never blocks generation. The AI is
+  // given absolute URLs because relative paths are not clickable in emails.
+  const attachments = await loadProductAttachments(workspaceId, context.product?.id || null);
+  context.productFiles = attachments.map((attachment) => ({
+    filename: attachment.filename,
+    publicUrl: absolutePublicUrl(attachment.publicUrl),
+  }));
   const startedAt = nowIso();
   const output = await callAgent('generateOutreachDraft', { workspaceId, context, language });
   const normalized = normalizeGeneratedOutput(output, { fallbackLanguage: language });
@@ -383,6 +468,8 @@ export async function generateDraft({ workspaceId, draftId, actorType = 'system'
   const nextStatus = requireApproval ? 'pending_approval' : 'approved';
   const candidateExecutionId = normalized.executionId || latestAgentExecutionId(workspaceId, 'outreach_writer', startedAt);
   const generatedBy = agentExecutionExists(candidateExecutionId) ? candidateExecutionId : null;
+  // Only reached after a successful, validated generation: attachments are
+  // always overwritten (including []) so a failed/older run cannot leak stale PDFs.
   const updated = updateDraft(workspaceId, draftId, {
     subject: normalized.subject,
     bodyText: normalized.bodyText,
@@ -391,6 +478,7 @@ export async function generateDraft({ workspaceId, draftId, actorType = 'system'
     generatedBy,
     quality: normalized.quality,
     guard: normalized.guard,
+    attachments,
     rejectionReason: null,
     updatedAt: nowIso(),
   });
@@ -409,6 +497,8 @@ export async function generateDraft({ workspaceId, draftId, actorType = 'system'
       quality: normalized.quality,
       guard: normalized.guard,
       agentExecutionId: generatedBy,
+      attachmentCount: attachments.length,
+      attachmentFilenames: attachments.map((attachment) => attachment.filename),
     },
   });
   return { draft: updated };

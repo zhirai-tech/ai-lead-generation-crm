@@ -179,6 +179,17 @@ export const SAMPLE_INPUTS = {
     product: { name: 'Industrial Valve X1', certifications: ['ISO 9001'] },
     language: 'en',
   },
+  keyword_research: {
+    product: {
+      name: 'EV 电池包支架 C 型',
+      category: 'EV battery brackets',
+      description: 'Aluminium battery pack bracket for EV platforms with high strength requirement.',
+      specs: { material: 'aluminium 6061', tolerance: '±0.1mm', process: 'CNC machining' },
+      applications: ['EV battery pack', 'battery housing'],
+      materials: 'aluminium',
+    },
+    icp: { excludeKeywords: ['consumer retail'] },
+  },
 };
 
 /** Context per convenience function (minimal-context assembly tests). */

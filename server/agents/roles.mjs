@@ -16,6 +16,7 @@ export const AGENT_ROLES = Object.freeze([
   'follow_up_planning',
   'compliance_guard',
   'quality_review',
+  'keyword_research',
 ]);
 
 /** Roles a plan may delegate to (everything except the orchestrator itself). */

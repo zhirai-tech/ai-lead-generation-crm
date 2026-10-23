@@ -20,7 +20,9 @@
  * A blocked send returns `{ sent:false, blockedBy, reason }` and writes an
  * audit event; it never throws for expected business conditions.
  */
-import { get, run } from '../core/db.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import { get, parseJson, run } from '../core/db.mjs';
 import { id } from '../core/ids.mjs';
 import { addHours, dayKey, nowIso, zonedParts } from '../core/time.mjs';
 import { normalizeDomain, normalizeEmail } from '../core/validate.mjs';
@@ -30,7 +32,7 @@ import { recordAudit } from '../core/audit.mjs';
 import { createNotification } from '../services/notifications.mjs';
 import { getSettings } from '../services/settings.mjs';
 import { config as defaultConfig } from '../config.mjs';
-import { buildMimeMessage, escapeHtml, textToHtml } from '../mail/mime.mjs';
+import { buildMimeMessage, escapeHtml, MIME_ATTACHMENT_MAX_BYTES, MIME_ATTACHMENTS_TOTAL_MAX_BYTES, textToHtml } from '../mail/mime.mjs';
 import { resolveSmtpConfig, smtpSend } from '../mail/smtp.mjs';
 import { isSimulationAccount, sendSimulated } from '../mail/simulation.mjs';
 import { callUpstream, tryCallUpstream } from './contracts.mjs';
@@ -395,6 +397,145 @@ function buildUnsubscribe({ workspaceId, contact, company, config = null }) {
   };
 }
 
+// --------------------------------------------------------------- attachments
+/** Only safe, product-document style attachment types are ever sent. */
+const ATTACHMENT_ALLOWED_MIME = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp']);
+
+/**
+ * Resolve a product_file.storage_path (relative to uploadsDir) to a real file
+ * path, refusing path traversal outside the uploads directory.
+ */
+export function resolveUploadFilePath(uploadsDir, storagePath) {
+  if (!uploadsDir || !storagePath) return null;
+  const root = path.resolve(String(uploadsDir));
+  const candidate = path.isAbsolute(String(storagePath)) ? path.resolve(String(storagePath)) : path.resolve(root, String(storagePath));
+  const relative = path.relative(root, candidate);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return candidate;
+}
+
+/**
+ * Load the file contents for the attachments declared on a draft
+ * (`message_drafts.attachments_json`). Missing / unsafe / oversized files are
+ * skipped with a warning — the mail is still sent without them.
+ * @returns {{contents:Array<{filename,mimeType,content:Buffer}>, snapshot:Array, warnings:Array}}
+ */
+export function loadDraftAttachments({ workspaceId, draft, config = null, logger = null } = {}) {
+  const declared = parseJson(draft && draft.attachments_json, []);
+  const result = { contents: [], snapshot: [], warnings: [] };
+  if (!Array.isArray(declared) || declared.length === 0) return result;
+  const uploadsDir = config && config.uploadsDir;
+  const warn = (warning) => {
+    result.warnings.push(warning);
+    if (logger) logger.warn('email attachment skipped', { draftId: draft.id, ...warning });
+  };
+  let totalBytes = 0;
+  declared.forEach((item, index) => {
+    if (!item || typeof item !== 'object') {
+      warn({ code: 'attachment_invalid', index, message: '附件条目格式不正确' });
+      return;
+    }
+    const productFileId = item.productFileId || null;
+    if (!productFileId) {
+      warn({ code: 'attachment_invalid', index, filename: item.filename || null, message: '附件缺少 productFileId' });
+      return;
+    }
+    const row = get(
+      'SELECT id, filename, mime_type, storage_path FROM product_files WHERE id = ? AND workspace_id = ?',
+      [productFileId, workspaceId],
+    );
+    if (!row) {
+      warn({ code: 'attachment_missing', productFileId, filename: item.filename || null, message: '附件记录不存在或已删除' });
+      return;
+    }
+    const mimeType = String(row.mime_type || item.mimeType || '').toLowerCase();
+    if (!ATTACHMENT_ALLOWED_MIME.has(mimeType)) {
+      warn({ code: 'attachment_type_blocked', productFileId, mimeType, message: `不支持的附件类型 ${mimeType}` });
+      return;
+    }
+    const filePath = resolveUploadFilePath(uploadsDir, row.storage_path);
+    if (!filePath) {
+      warn({ code: 'attachment_path_invalid', productFileId, message: '附件存储路径不合法' });
+      return;
+    }
+    let content;
+    try {
+      content = fs.readFileSync(filePath);
+    } catch (error) {
+      warn({
+        code: 'attachment_file_missing',
+        productFileId,
+        filename: row.filename || item.filename || null,
+        message: `附件文件缺失或不可读：${String(error && error.message ? error.message : error).slice(0, 200)}`,
+      });
+      return;
+    }
+    if (!content.length) {
+      warn({ code: 'attachment_empty', productFileId, filename: row.filename || null, message: '附件文件为空' });
+      return;
+    }
+    if (content.length > MIME_ATTACHMENT_MAX_BYTES) {
+      warn({
+        code: 'MIME_ATTACHMENT_TOO_LARGE',
+        productFileId,
+        filename: row.filename || item.filename || null,
+        sizeBytes: content.length,
+        message: `附件超过单文件上限 ${MIME_ATTACHMENT_MAX_BYTES} 字节，已跳过`,
+      });
+      return;
+    }
+    if (totalBytes + content.length > MIME_ATTACHMENTS_TOTAL_MAX_BYTES) {
+      warn({
+        code: 'MIME_ATTACHMENTS_TOTAL_TOO_LARGE',
+        productFileId,
+        filename: row.filename || item.filename || null,
+        message: `附件总量超过上限 ${MIME_ATTACHMENTS_TOTAL_MAX_BYTES} 字节，已跳过`,
+      });
+      return;
+    }
+    totalBytes += content.length;
+    const filename = row.filename || item.filename || `attachment-${index + 1}.pdf`;
+    result.contents.push({ filename, mimeType, content });
+    result.snapshot.push({
+      productFileId,
+      filename,
+      mimeType,
+      sizeBytes: content.length,
+      publicUrl: typeof item.publicUrl === 'string' && item.publicUrl ? item.publicUrl : null,
+    });
+  });
+  return result;
+}
+
+/** Build an absolute public URL for an email recipient. */
+export function absolutePublicUrl(publicUrl, config = null) {
+  const text = String(publicUrl || '').trim();
+  if (!text) return '';
+  if (/^https?:\/\//i.test(text)) return text;
+  const base = String((config || defaultConfig).publicBaseUrl || '').replace(/\/+$/, '');
+  return `${base}${text.startsWith('/') ? '' : '/'}${text}`;
+}
+
+/**
+ * Catalogue lines appended to the email body when the draft does not already
+ * mention the PDF's public URL. Only PDFs actually attached get a line, and the
+ * same URL is never added twice.
+ */
+export function buildCatalogueLinkLines({ draftBodyText = '', snapshot = [], config = null } = {}) {
+  const body = String(draftBodyText || '');
+  const lines = [];
+  const seen = new Set();
+  for (const item of snapshot) {
+    if (item.mimeType !== 'application/pdf' || !item.publicUrl) continue;
+    const absolute = absolutePublicUrl(item.publicUrl, config);
+    if (!absolute || seen.has(absolute)) continue;
+    seen.add(absolute);
+    if (body.includes(item.publicUrl) || body.includes(absolute)) continue;
+    lines.push(`Product catalogue (PDF): ${absolute}`);
+  }
+  return lines;
+}
+
 function updateDraftFailed(workspaceId, draftId, error) {
   run("UPDATE message_drafts SET status = 'failed', updated_at = ? WHERE id = ? AND workspace_id = ? AND status <> 'sent'", [
     nowIso(),
@@ -503,8 +644,19 @@ export async function sendDraft({
 
   const senderAddress = account.address;
   const senderName = account.display_name || company?.name || '';
+  // Attachments: read declared snapshots + real files from the uploads dir.
+  // Missing/oversized files never fail the send; they are logged as warnings.
+  const attachments = loadDraftAttachments({ workspaceId, draft, config: effectiveConfig, logger });
+  const catalogueLines = buildCatalogueLinkLines({
+    draftBodyText: draft.body_text,
+    snapshot: attachments.snapshot,
+    config: effectiveConfig,
+  });
+  const bodyWithCatalogue = [String(draft.body_text || '').trim(), catalogueLines.join('\n')]
+    .filter(Boolean)
+    .join('\n\n');
   const fullText = buildComplianceText({
-    text: draft.body_text,
+    text: bodyWithCatalogue,
     settings: context.settings,
     unsubscribeUrl: unsubscribe.url,
     senderCompany: context.settings?.compliance?.senderCompanyName || '',
@@ -522,6 +674,7 @@ export async function sendDraft({
       html,
       date: new Date(nowMs),
       unsubscribe: { url: unsubscribe.url, mailto: unsubscribe.mailto },
+      attachments: attachments.contents,
       headers: {
         'X-ZHIRAI-Draft': draft.id,
         'X-Mailer': 'ZHIRAI Outreach',
@@ -542,6 +695,8 @@ export async function sendDraft({
     actorType,
     simulation: isSimulationAccount(account),
     unsubscribe: true,
+    attachmentCount: attachments.snapshot.length,
+    attachmentWarnings: attachments.warnings.map((warning) => warning.code),
   };
   try {
     run(
@@ -624,10 +779,11 @@ export async function sendDraft({
     return { sent: false, allowed: true, blockedBy: 'send_failed', reason: '邮件发送失败', transient, error: errorMessage };
   }
 
-  // 2) Success: finalise message, draft, usage, audit, campaign advancement.
+  // 2) Success: finalise message, attachment snapshot, draft, usage, audit.
   try {
-    run("UPDATE email_messages SET status = 'sent', sent_at = ?, error = NULL WHERE id = ? AND workspace_id = ?", [
+    run("UPDATE email_messages SET status = 'sent', sent_at = ?, error = NULL, attachments_json = ? WHERE id = ? AND workspace_id = ?", [
       nowIsoValue,
+      JSON.stringify(attachments.snapshot),
       messageRowId,
       workspaceId,
     ]);
@@ -650,6 +806,8 @@ export async function sendDraft({
         messageId: built.messageId,
         simulation: isSimulationAccount(account),
         jobId,
+        attachmentCount: attachments.snapshot.length,
+        attachmentWarnings: attachments.warnings.map((warning) => warning.code),
       },
     });
   } catch (error) {
@@ -682,6 +840,8 @@ export async function sendDraft({
     simulation: isSimulationAccount(account),
     outboxPath: delivery.outboxPath || null,
     sentAt: nowIsoValue,
+    attachments: attachments.snapshot,
+    attachmentWarnings: attachments.warnings,
   };
 }
 
@@ -706,6 +866,10 @@ export default {
   assertSendAllowed,
   isWithinSendWindow,
   describeSendPolicy,
+  loadDraftAttachments,
+  buildCatalogueLinkLines,
+  resolveUploadFilePath,
+  absolutePublicUrl,
   SEND_BLOCK_CODES,
   DEFAULT_SEND_WINDOW,
 };

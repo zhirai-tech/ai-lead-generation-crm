@@ -21,8 +21,8 @@ test('GET /api/v1/agents returns catalogue + safe provider status without prompt
   const response = await ctx.request('GET', '/api/v1/agents');
   assert.equal(response.status, 200);
   const data = response.body.data;
-  assert.equal(data.items.length, 10);
-  assert.equal(data.roles.length, 10);
+  assert.equal(data.items.length, 11);
+  assert.equal(data.roles.length, 11);
   assert.equal(data.provider.provider, 'simulation');
   assert.equal(data.provider.isSimulation, true);
   assert.equal(data.provider.configured, false);
@@ -89,6 +89,35 @@ test('POST /api/v1/agents/run executes via simulation, persists execution and au
   assert.equal(list.body.data.pageSize, 5);
   assert.ok(list.body.data.items.every((item) => item.role === 'outreach_writer'));
   assert.equal(list.body.data.items[0].input, undefined, 'list must not include heavy payloads');
+});
+
+test('POST /api/v1/agents/run supports the v1.1 keyword_research role', async () => {
+  const response = await ctx.request('POST', '/api/v1/agents/run', {
+    body: {
+      role: 'keyword_research',
+      input: {
+        product: {
+          name: 'Industrial Valve X1',
+          category: 'industrial valves',
+          applications: ['water treatment'],
+          materials: 'stainless steel',
+        },
+      },
+    },
+  });
+  assert.equal(response.status, 200, response.text);
+  const data = response.body.data;
+  assert.equal(data.usage.provider, 'simulation');
+  assert.ok(Array.isArray(data.output.keywords) && data.output.keywords.length > 0);
+  assert.ok(Array.isArray(data.output.negativeKeywords));
+  assert.ok(Array.isArray(data.output.searchQueries));
+  const validation = validateOutput(data.output, OUTPUT_SCHEMAS.keyword_research);
+  assert.equal(validation.ok, true, validation.errors.join('; '));
+
+  const detail = await ctx.request('GET', `/api/v1/agents/executions/${data.executionId}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.data.execution.role, 'keyword_research');
+  assert.ok(detail.body.data.execution.promptVersion.startsWith('keyword_research@'));
 });
 
 test('POST /api/v1/agents/test-provider reports simulation mode offline', async () => {
