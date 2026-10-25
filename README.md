@@ -105,7 +105,7 @@ npm test
 
 ## 许可证
 
-见 [LICENSE](LICENSE)。未经授权不得复制、分发或商业使用。
+本项目代码采用 **MIT License**。再分发时必须保留 [LICENSE](LICENSE) 中的版权声明和许可声明；第三方依赖和商标仍归各自权利人所有。详见 [NOTICE](NOTICE)。
 
 ## 联系
 

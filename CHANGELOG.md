@@ -117,7 +117,7 @@
 - **未实现**：MFA/SSO、自助找回密码（用本地脚本）、robots.txt 自动解析、数据库整库加密、彻底删除/匿名化工具、MCP Server/Webhook 出站、LinkedIn/WhatsApp 通道、多副本高可用、内置 WAF、许可证服务端校验。
 - **模拟 Provider 的输出仅供演练**，不代表真实模型质量；`guard_json`/`quality_json` 在模拟模式下可能为空。
 - **法律审查**：GDPR/ePrivacy 各国规则未由律师复核；`docs/COMPLIANCE.md` 明确为"非法律意见"。
-- **许可**：专有软件（UNLICENSED），商业使用需书面授权；参考项目仅研究，未复制代码/素材（见 `docs/RESEARCH.md`、`docs/LICENSE-REGISTER.md`）。
+- **许可**：项目代码采用 MIT License；再分发保留版权与许可声明，第三方依赖/商标归各自权利人。参考项目仅研究，未复制代码/素材。
 
 ### 升级说明
 

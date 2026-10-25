@@ -795,8 +795,8 @@ flowchart TB
 | --- | --- |
 | 产品名 | **ZHIRAI Europe B2B AI Outreach Platform**（中文：智睿欧洲 B2B AI 外贸获客平台） |
 | 版权归属 | `© 2026 智睿科技 保留所有权利。` 作者：ZHIRAI · 智睿科技 · 独立开发者 |
-| 代码许可 | 专有 / `UNLICENSED`（见根目录 [LICENSE](../LICENSE)）：未经书面商业授权不得复制、分发、转售、SaaS 化提供 |
-| 商业授权 | ① 软件授权（自托管份数/席位）；② 源码授权（含二次开发权）；③ 白标/OEM；均需签署合同（联系 xtang3125@gmail.com） |
+| 代码许可 | **MIT License**（见根目录 [LICENSE](../LICENSE)）：允许使用、修改、分发；再分发必须保留版权与许可声明，第三方依赖/商标归各自权利人 |
+| 品牌与第三方 | MIT 不授予 ZHIRAI 商标权；第三方依赖继续适用其原始许可证 |
 | 发行版本 | 语义化版本 `v1.1.0`；`CHANGELOG.md` 记录；zip 根目录平铺（见 [DEPLOY.md](../DEPLOY.md)） |
 | 依赖清单 | [LICENSE-REGISTER.md](./LICENSE-REGISTER.md)：当前 0 个运行时 npm 依赖、0 个第三方代码 |
 | 第三方通知 | 未来引入第三方时须登记版本/许可证/版权声明/分发影响，并随发行物附带通知文件 |
@@ -894,7 +894,7 @@ flowchart TB
 | ADR-007 | 发送默认 | 人工审批 = true | 效率换安全 |
 | ADR-008 | 接管语义 | 原子状态 + 取消任务 + 发送前再校验 | 实现复杂度、跨模块契约 |
 | ADR-009 | 评分 | 规则优先（`rules-v1`），AI 只做解释增强 | 灵活度不如纯 AI |
-| ADR-010 | 许可与商业分发 | 专有许可 + 0 第三方依赖 + 登记册 | 生态组件需自建 |
+| ADR-010 | 许可与分发 | MIT License + 第三方依赖登记 | 需保留版权/许可声明；不授予商标权 |
 | ADR-011 | 数据模型 | 显式表 + JSON 扩展，不做 EAV | 扩展字段查询弱 |
 | ADR-012 | 多租户 | 共享库 + `workspace_id` 行级隔离 | 依赖开发者纪律 + 测试 |
 | ADR-013 | 部署 | 单机 + 反向代理，不做 K8s | 规模上限 |
@@ -968,7 +968,7 @@ flowchart TB
 | 9 | 邮件发送、回复识别和人工接管机制 | §10 | ✅ | 五道闸 + 附件装配 + 11 类分类 + 6 态接管；E2E 验证 |
 | 10 | 安全、隐私和合规设计 | §11 + [SECURITY.md](./SECURITY.md) + [COMPLIANCE.md](./COMPLIANCE.md) | ✅ | 威胁模型 T1–T20 + 生产清单；法律审查 🔶 待外部复核 |
 | 11 | 独立部署架构 | §12 + [DEPLOY.md](../DEPLOY.md) | ✅ | Windows/Linux/systemd/nginx/HTTPS/备份恢复（含 uploads） |
-| 12 | 商业分发与许可证策略 | §13 + [LICENSE-REGISTER.md](./LICENSE-REGISTER.md) | ✅ | 专有许可 + 0 依赖登记 |
+| 12 | 分发与许可证策略 | §13 + [LICENSE-REGISTER.md](./LICENSE-REGISTER.md) | ✅ | MIT License + 依赖登记 |
 | 13 | 开源项目参考清单 | §14 + [RESEARCH.md](./RESEARCH.md) | ✅ | 8 个项目 |
 | 14 | 各项目许可证和适用范围 | §15 + RESEARCH §4 | ✅ | 2026-10-22 读取 LICENSE 核验（仓库级） |
 | 15 | 哪些只研究、哪些可能采用 | §16 + RESEARCH §3 | ✅ | A/B/C/D 分类；当前 0 采用 |

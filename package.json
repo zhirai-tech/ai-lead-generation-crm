@@ -10,7 +10,7 @@
   },
   "author": "ZHIRAI <xtang3125@gmail.com> (https://zhirai.cloud)",
   "homepage": "https://zhirai.cloud",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "scripts": {
     "start": "node server/index.mjs",
     "dev": "node --watch server/index.mjs",
