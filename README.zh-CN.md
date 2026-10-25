@@ -1,6 +1,6 @@
 # ZHIRAI AI 智能获客与销售外联系统
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md) | [个人网站](https://zhinian-ai.com)
 
 > 自托管的AI 智能获客工作台：产品资料 → 客户画像（ICP）→ 企业发现 → 可解释评分 → 个性化开发信 → 人工审批 → 邮件跟进 → 回复分类 → 销售管道。
 
@@ -89,3 +89,9 @@ npm test
 项目代码采用 [MIT License](LICENSE)。再分发必须保留版权和许可声明；见 [NOTICE](NOTICE)。第三方依赖、素材和商标归各自权利人。
 
 ---
+
+---
+
+## 个人网站
+
+**ZHIRAI / 智睿科技** — [zhinian-ai.com](https://zhinian-ai.com)
