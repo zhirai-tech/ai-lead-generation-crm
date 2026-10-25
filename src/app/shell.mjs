@@ -118,8 +118,8 @@ export function buildShell({ container, onLogout }) {
   }
 
   const footer = el('div', 'sidebar-footer');
-  const personalSite = el('a', 'personal-site', '个人网站 · zhinian-ai.com');
-  personalSite.href = 'https://zhinian-ai.com';
+  const personalSite = el('a', 'personal-site', '个人网站 · zhirai.cloud');
+  personalSite.href = 'https://zhirai.cloud';
   personalSite.target = '_blank';
   personalSite.rel = 'noopener noreferrer';
   personalSite.title = '智睿个人网站';
