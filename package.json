@@ -1,9 +1,10 @@
 {
   "name": "zhirai-europe-b2b-outreach",
-  "version": "1.1.0",
+  "version": "1.1.0-1025",
   "private": true,
   "description": "ZHIRAI Europe B2B AI Outreach Platform - self-hosted B2B lead discovery, qualification, outreach and CRM.",
   "type": "module",
+  "main": "desktop/main.mjs",
   "engines": {
     "node": ">=22.5.0"
   },
@@ -17,6 +18,13 @@
     "seed": "node scripts/seed-demo.mjs",
     "reset-password": "node scripts/reset-password.mjs",
     "backup": "node scripts/backup.mjs",
+    "desktop": "electron desktop/main.mjs",
     "test": "node --test --test-force-exit \"tests/**/*.test.mjs\""
+  },
+  "devDependencies": {
+    "electron": "^34.0.0"
+  },
+  "dependencies": {
+    "playwright": "^1.64.1"
   }
 }

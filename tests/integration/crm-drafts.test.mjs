@@ -241,13 +241,17 @@ test('drafts: generation attaches up to 3 product PDFs and exposes them', async 
   assert.equal(attachments.length, MAX_DRAFT_ATTACHMENTS);
   assert.deepEqual(
     attachments.map((item) => item.filename),
-    ['catalogue-1.pdf', 'catalogue-2.pdf', 'catalogue-3.pdf'],
+    ['catalogue-1.pdf', 'catalogue-2.pdf', 'product.png'],
   );
   for (const attachment of attachments) {
     assert.deepEqual(Object.keys(attachment).sort(), ['filename', 'mimeType', 'productFileId', 'publicUrl', 'sizeBytes']);
-    assert.equal(attachment.mimeType, 'application/pdf');
     assert.ok(Number(attachment.sizeBytes) > 0);
-    assert.ok(attachment.publicUrl.startsWith('/api/v1/public/product-files/'));
+    if (attachment.mimeType === 'application/pdf') {
+      assert.ok(attachment.publicUrl.startsWith('/api/v1/public/product-files/'));
+    } else {
+      assert.equal(attachment.mimeType, 'image/png');
+      assert.equal(attachment.publicUrl, '');
+    }
   }
 
   // The writer context must receive absolute public links (relative URLs are
@@ -256,7 +260,7 @@ test('drafts: generation attaches up to 3 product PDFs and exposes them', async 
   assert.deepEqual(agentCalls[0].context.productFiles, [
     { filename: 'catalogue-1.pdf', publicUrl: 'http://127.0.0.1:4173/api/v1/public/product-files/token-1' },
     { filename: 'catalogue-2.pdf', publicUrl: 'http://127.0.0.1:4173/api/v1/public/product-files/token-2' },
-    { filename: 'catalogue-3.pdf', publicUrl: 'http://127.0.0.1:4173/api/v1/public/product-files/token-3' },
+    { filename: 'product.png', publicUrl: '' },
   ]);
   assert.deepEqual(loaderCalls[0], { wsId: workspaceId, productId: product.id });
 
@@ -275,7 +279,7 @@ test('drafts: generation attaches up to 3 product PDFs and exposes them', async 
   assert.equal(parsed[0].productFileId, 'prf_pdf_1');
 });
 
-test('drafts: generation without product PDFs writes an empty attachments array', async (t) => {
+test('drafts: generation attaches product images even when no PDF exists', async (t) => {
   const ctx = await createTestContext();
   t.after(async () => {
     resetAgentImplementations();
@@ -295,17 +299,20 @@ test('drafts: generation without product PDFs writes an empty attachments array'
   const agentCalls = [];
   setAgentImplementation('generateOutreachDraft', async (args) => {
     agentCalls.push(args);
-    return { subject: 'No attachments', bodyText: 'Plain outreach body without product documents.', language: 'en' };
+    return { subject: 'Product photo attached', bodyText: 'Plain outreach body without product documents.', language: 'en' };
   });
 
   const generated = await ctx.request('POST', `/api/v1/drafts/${draft.id}/generate`, { body: {} });
   assert.equal(generated.status, 200, generated.text);
-  assert.deepEqual(generated.body.data.draft.attachments, []);
-  assert.deepEqual(agentCalls[0].context.productFiles, []);
+  assert.equal(generated.body.data.draft.attachments.length, 1);
+  assert.equal(generated.body.data.draft.attachments[0].filename, 'product.png');
+  assert.equal(generated.body.data.draft.attachments[0].mimeType, 'image/png');
+  assert.equal(generated.body.data.draft.attachments[0].publicUrl, '');
+  assert.deepEqual(agentCalls[0].context.productFiles, [{ filename: 'product.png', publicUrl: '' }]);
   const stored = get('SELECT attachments_json FROM message_drafts WHERE workspace_id = ? AND id = ?', [workspaceId, draft.id]);
-  assert.deepEqual(JSON.parse(stored.attachments_json), []);
+  assert.equal(JSON.parse(stored.attachments_json).length, 1);
   const detail = await ctx.request('GET', `/api/v1/drafts/${draft.id}`);
-  assert.deepEqual(detail.body.data.attachments, []);
+  assert.equal(detail.body.data.attachments.length, 1);
 });
 
 test('drafts: product-files module not ready degrades to no attachments', async (t) => {

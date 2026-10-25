@@ -13,6 +13,7 @@ import dataHandlers from './data-handlers.mjs';
 import crmHandlers from './crm-handlers.mjs';
 import emailHandlers from './email-handlers.mjs';
 import maintenanceHandlers from './maintenance-handler.mjs';
+import agentHandlers from './agent-handlers.mjs';
 import { JobError, requirePayloadField } from './errors.mjs';
 
 const registry = new Map();
@@ -28,6 +29,7 @@ registerGroup(dataHandlers);
 registerGroup(crmHandlers);
 registerGroup(emailHandlers);
 registerGroup(maintenanceHandlers);
+registerGroup(agentHandlers);
 
 export function getHandler(type) {
   return registry.get(type) || null;

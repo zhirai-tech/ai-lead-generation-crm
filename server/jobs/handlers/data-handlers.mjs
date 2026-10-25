@@ -39,6 +39,22 @@ async function companyCrawl({ job, workspaceId, payload }) {
 async function companyEnrich({ job, workspaceId, payload }) {
   const companyId = requirePayloadField(payload, 'companyId');
   const result = await callUpstream('enrichment', 'enrichCompany', { workspaceId, companyId, actorId: job.createdBy || null });
+  if (payload.discoveryRunId) {
+    try {
+      const { recordEnrichmentProgress } = await import('../../services/discovery.mjs');
+      recordEnrichmentProgress(workspaceId, payload.discoveryRunId, {
+        companyName: payload.companyName || '',
+        emails: result?.emailsFound || 0,
+        phones: result?.browser?.phones?.length || 0,
+        foundEmails: Array.isArray(result?.emails) ? result.emails : [],
+        foundPhones: Array.isArray(result?.browser?.phones) ? result.browser.phones : [],
+        address: result?.browser?.address || null,
+        socials: Array.isArray(result?.browser?.socials) ? result.browser.socials : [],
+      });
+    } catch {
+      // progress display is best-effort and must never fail enrichment
+    }
+  }
   recordJobUsage({ workspaceId, category: 'data_lookup', quantity: 1, jobId: job.id, provider: 'enrichment' });
   recordJobAudit({
     workspaceId,

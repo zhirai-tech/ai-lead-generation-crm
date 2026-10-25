@@ -140,12 +140,14 @@ test('discovery run listing, detail 404 and provider catalogue', async () => {
   const providers = await ctx.request('GET', '/api/v1/discovery/providers');
   assert.equal(providers.status, 200, providers.text);
   const keys = providers.body.data.items.map((item) => item.key);
-  assert.ok(keys.includes('simulation'));
+  assert.ok(keys.includes('osm'));
   assert.ok(keys.includes('csv_import'));
-  assert.ok(keys.includes('search_api'));
-  const simulation = providers.body.data.items.find((item) => item.key === 'simulation');
-  assert.equal(simulation.implemented, true);
-  assert.equal(simulation.offline, true);
+  assert.ok(keys.includes('brave'));
+  assert.ok(keys.includes('serper'));
+  assert.ok(!keys.includes('simulation'), 'simulation provider is hidden from the live catalogue');
+  const osm = providers.body.data.items.find((item) => item.key === 'osm');
+  assert.equal(osm.implemented, true);
+  assert.equal(osm.offline, false);
 });
 
 test('discovery honours maxResults and links created companies to the selected ICP', async () => {

@@ -27,6 +27,7 @@ import {
 } from './queue.mjs';
 import { getHandler } from './handlers/index.mjs';
 import { runSchedulerTick } from './scheduler.mjs';
+import { recoverExpiredAgentTasks } from '../agents/loop.mjs';
 
 const DEFAULT_POLL_MS = 1000;
 const DEFAULT_SCHEDULER_INTERVAL_MS = 60_000;
@@ -95,6 +96,18 @@ export function getWorkerStatus() {
   };
 }
 
+
+async function finalizeDiscoveryForJob(job, logger) {
+  const runId = job?.payload?.discoveryRunId;
+  if (!runId || !['company.enrich', 'lead.score'].includes(job.type)) return;
+  try {
+    const { finalizeDiscoveryQualification } = await import('../services/discovery.mjs');
+    finalizeDiscoveryQualification(job.workspaceId, runId);
+  } catch (error) {
+    if (logger) logger.error('discovery qualification finalizer failed', { runId, error });
+  }
+}
+
 /**
  * Execute one claimed job. Exported so tests can drive a job deterministically
  * without starting the timer loop.
@@ -134,6 +147,7 @@ export async function processJob(job, { config = null, logger = null } = {}) {
       return { id: job.id, status: 'cancelled' };
     }
     completeJob(job.id, { result: result && typeof result === 'object' ? result : { value: result } });
+    await finalizeDiscoveryForJob(job, logger);
     state.processed += 1;
     if (logger) {
       logger.debug('job succeeded', { jobId: job.id, type: job.type, ms: Date.now() - startedAt });
@@ -143,6 +157,7 @@ export async function processJob(job, { config = null, logger = null } = {}) {
     const retryable = isRetryableJobError(error);
     const retryDelayMs = Number.isFinite(error && error.retryDelayMs) ? Math.max(0, error.retryDelayMs) : null;
     const outcome = failJob(job.id, error, { retryable, retryDelayMs });
+    if (['failed', 'dead'].includes(outcome.status)) await finalizeDiscoveryForJob(job, logger);
     state.failed += 1;
     state.lastError = { jobId: job.id, message: String(error && error.message ? error.message : error).slice(0, 500), at: nowIso() };
     if (logger) {
@@ -177,6 +192,16 @@ export async function runWorkerTick({ config = null, logger = null, workerId = s
   const recovered = recoverExpiredLeases();
   if (recovered.recovered || recovered.dead) {
     if (logger) logger.warn('recovered expired job leases', recovered);
+  }
+  if (config?.features?.agentLoop) {
+    try {
+      const agentRecovered = recoverExpiredAgentTasks({ now: nowIso() });
+      if (agentRecovered.recovered || agentRecovered.skipped) {
+        if (logger) logger.warn('recovered expired agent tasks', agentRecovered);
+      }
+    } catch (error) {
+      if (logger) logger.error('agent task recovery failed', { error });
+    }
   }
 
   const schedulerInterval = Math.max(5_000, Number(config?.worker?.schedulerIntervalMs || DEFAULT_SCHEDULER_INTERVAL_MS));

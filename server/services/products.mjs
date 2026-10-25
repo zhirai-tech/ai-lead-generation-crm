@@ -205,10 +205,11 @@ function tokenize(text) {
  * Pure rule matcher. Returns {score (0..1), reasons[], evidence[]}.
  * No AI, no network, deterministic and unit-testable.
  */
-export function matchProductRules(product, company) {
+export function matchProductRules(product, company, { identity = null } = {}) {
   const reasons = [];
   const evidence = [];
   if (!product || !company) return { score: 0, reasons: ['缺少产品或企业信息'], evidence: [] };
+  const isPlatform = identity?.role === 'platform';
   const companyText = [company.name, company.industry, company.description, company.companyType, company.region]
     .filter(Boolean)
     .join(' ')
@@ -246,11 +247,17 @@ export function matchProductRules(product, company) {
   }
 
   // 4) Buyer profile: distributors / importers / wholesalers are the ICP.
-  const buyerHit = BUYER_COMPANY_TYPES.has(String(company.companyType || '').toLowerCase()) || BUYER_TYPE_KEYWORDS.some((word) => companyText.includes(word));
+  // Platform catalogue pages must not inherit their suppliers' buyer signals.
+  const buyerHit = !isPlatform && (BUYER_COMPANY_TYPES.has(String(company.companyType || '').toLowerCase())
+    || identity?.role === 'direct_buyer'
+    || BUYER_TYPE_KEYWORDS.some((word) => companyText.includes(word)));
   if (buyerHit) {
     score += 0.2;
     reasons.push('企业属于进口商/分销商/批发商类型，具备采购动机');
-    evidence.push({ type: 'buyer_profile', matched: company.companyType || 'keyword' });
+    evidence.push({ type: 'buyer_profile', matched: company.companyType || identity?.companyType || 'keyword' });
+  } else if (isPlatform) {
+    reasons.push('平台/供应商目录中的商品和批发关键词不计入自身采购匹配');
+    evidence.push({ type: 'platform_identity', matched: 'catalog_not_own_buying' });
   }
 
   // 5) Automotive aftermarket industry fit.

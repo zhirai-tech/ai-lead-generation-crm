@@ -298,6 +298,23 @@ export async function render(root) {
     state.automation = null;
     renderList();
     await loadDetail(thread.id);
+    // Opening a conversation is the user's confirmation that they have read it.
+    // Mark it read automatically so the list does not keep an obsolete unread badge.
+    if (thread.unreadCount > 0) {
+      void autoMarkRead(thread);
+    }
+  }
+
+  async function autoMarkRead(thread) {
+    try {
+      await api.post(`${API}/inbox/threads/${encodeURIComponent(thread.id)}/read`, {});
+      thread.unreadCount = 0;
+      const current = state.threads.find((item) => item.id === thread.id);
+      if (current) current.unreadCount = 0;
+      renderList();
+    } catch {
+      // Read state is cosmetic; never block opening a conversation on it.
+    }
   }
 
   async function loadDetail(threadId) {

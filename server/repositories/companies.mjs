@@ -47,6 +47,9 @@ const COMPANY_SELECT = `
 
 export function mapCompany(row) {
   if (!row) return null;
+  const tags = jsonArray(row.tags_json);
+  const qualificationTag = tags.find((tag) => String(tag).startsWith('qualification:'));
+  const qualificationReasonTag = tags.find((tag) => String(tag).startsWith('qualification_reason:'));
   const company = {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -66,7 +69,9 @@ export function mapCompany(row) {
     linkedinUrl: row.linkedin_url || null,
     phone: row.phone || null,
     status: row.status,
-    tags: jsonArray(row.tags_json),
+    tags,
+    qualification: qualificationTag ? String(qualificationTag).slice('qualification:'.length) : null,
+    qualificationReason: qualificationReasonTag ? String(qualificationReasonTag).slice('qualification_reason:'.length) : null,
     icpId: row.icp_id || null,
     ownerUserId: row.owner_user_id || null,
     dataQualityScore: row.data_quality_score,
@@ -177,6 +182,29 @@ export function buildCompanyWhere(workspaceId, filters = {}) {
   if (f.hasContacts === true) {
     where.push(`EXISTS (SELECT 1 FROM contacts ct WHERE ct.company_id = c.id AND ct.workspace_id = c.workspace_id AND ct.deleted_at IS NULL)`);
   }
+  const hasDomainSql = `(COALESCE(NULLIF(c.domain, ''), NULLIF(c.website, '')) IS NOT NULL)`;
+  const hasPhoneSql = `(c.phone IS NOT NULL AND c.phone <> '')`;
+  const hasAddressSql = `(c.address IS NOT NULL AND c.address <> '')`;
+  const hasEmailSql = `EXISTS (SELECT 1 FROM contacts ct WHERE ct.company_id = c.id AND ct.workspace_id = c.workspace_id
+    AND ct.deleted_at IS NULL AND ct.email_normalized IS NOT NULL AND ct.email_normalized <> '' AND ct.email_status <> 'invalid')`;
+  if (f.hasDomain === true) where.push(hasDomainSql);
+  else if (f.hasDomain === false) where.push(`NOT ${hasDomainSql}`);
+  if (f.hasPhone === true) where.push(hasPhoneSql);
+  else if (f.hasPhone === false) where.push(`NOT ${hasPhoneSql}`);
+  if (f.hasAddress === true) where.push(hasAddressSql);
+  else if (f.hasAddress === false) where.push(`NOT ${hasAddressSql}`);
+  if (f.contactLevel === 'A') where.push(`${hasDomainSql} AND ${hasEmailSql} AND ${hasPhoneSql} AND ${hasAddressSql}`);
+  else if (f.contactLevel === 'B') where.push(`${hasDomainSql} AND ${hasEmailSql} AND ${hasPhoneSql}`);
+  else if (f.contactLevel === 'C') where.push(`${hasDomainSql} AND (${hasEmailSql} OR ${hasPhoneSql}) AND NOT (${hasEmailSql} AND ${hasPhoneSql})`);
+  else if (f.contactLevel === 'D') where.push(`${hasDomainSql} AND NOT (${hasEmailSql} OR ${hasPhoneSql})`);
+  else if (f.contactLevel === 'none') where.push(`NOT ${hasDomainSql}`);
+  if (f.leadStage === 'discovered') where.push(`c.status = 'new' AND NOT ${hasDomainSql}`);
+  else if (f.leadStage === 'potential') where.push(`c.status = 'new' AND ${hasDomainSql}`);
+  else if (f.leadStage === 'contacted') where.push(`c.status = 'contacted'`);
+  else if (f.leadStage === 'intent') where.push(`c.status = 'replied'`);
+  else if (f.leadStage === 'customer') where.push(`c.status = 'customer'`);
+  else if (f.leadStage === 'qualified') where.push(`c.status = 'qualified'`);
+  else if (f.leadStage === 'excluded') where.push(`c.status IN ('disqualified','archived')`);
   if (f.automationState) {
     where.push(`EXISTS (SELECT 1 FROM automation_states a WHERE a.company_id = c.id AND a.workspace_id = c.workspace_id AND a.state = ?)`);
     params.push(f.automationState);
@@ -283,6 +311,16 @@ export function softDeleteCompany(workspaceId, companyId) {
   const result = run(
     `UPDATE companies SET deleted_at = ?, updated_at = ?, status = 'archived' WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
     [now, now, companyId, workspaceId],
+  );
+  return result.changes > 0;
+}
+
+/** Bring a soft-deleted company back when discovery finds it again. */
+export function restoreCompany(workspaceId, companyId) {
+  const now = new Date().toISOString();
+  const result = run(
+    `UPDATE companies SET deleted_at = NULL, status = 'new', updated_at = ? WHERE id = ? AND workspace_id = ?`,
+    [now, companyId, workspaceId],
   );
   return result.changes > 0;
 }

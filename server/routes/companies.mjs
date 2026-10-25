@@ -59,7 +59,7 @@ export function mount(router) {
           dataQualityScore: 'dataQualityScore',
           contactsCount: 'contactsCount',
         },
-        { key: 'createdAt', direction: 'DESC' },
+        { key: 'score', direction: 'DESC' },
       );
       const filters = {
         q: asString(ctx.query.get('q'), { max: 120 }),
@@ -77,6 +77,11 @@ export function mount(router) {
         maxScore: intParam(ctx.query, 'maxScore'),
         hasEmail: boolParam(ctx.query, 'hasEmail'),
         hasContacts: boolParam(ctx.query, 'hasContacts'),
+        hasDomain: boolParam(ctx.query, 'hasDomain'),
+        hasPhone: boolParam(ctx.query, 'hasPhone'),
+        hasAddress: boolParam(ctx.query, 'hasAddress'),
+        contactLevel: asString(ctx.query.get('contactLevel'), { max: 8 }) || null,
+        leadStage: asString(ctx.query.get('leadStage'), { max: 20 }) || null,
         ...pagination,
       };
       return companiesService.listCompanies(ctx.workspace.id, filters, sort);
@@ -119,9 +124,11 @@ export function mount(router) {
     '/api/v1/companies/bulk',
     async (ctx) => {
       const body = ctx.body || {};
-      const action = asEnum(body.action, ['score', 'archive', 'assign', 'status'], { required: true, label: '批量操作' });
+      const action = asEnum(body.action, ['score', 'archive', 'delete', 'assign', 'status', 'enrich', 'draft'], { required: true, label: '批量操作' });
       const ids = asArray(body.ids, { required: true, max: 200, label: '企业列表' }).filter((value) => typeof value === 'string');
-      if (action === 'archive') ctx.requireCapability('data.delete');
+      if (action === 'archive' || action === 'delete') ctx.requireCapability('data.delete');
+      if (action === 'enrich') ctx.requireCapability('discovery.run');
+      if (action === 'draft') ctx.requireCapability('data.write');
       if (action === 'status' && !COMPANY_STATUSES.includes(body.status)) throw validationError('企业状态不在允许范围内');
       return companiesService.bulkCompanyAction(
         ctx.workspace.id,

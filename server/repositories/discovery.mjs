@@ -27,6 +27,13 @@ export function mapDiscoveryRun(row) {
     status: row.status,
     resultCount: row.result_count,
     companiesCreated: row.companies_created,
+    qualificationStatus: row.qualification_status || 'not_applicable',
+    qualifiedCount: row.qualified_count || 0,
+    rejectedCount: row.rejected_count || 0,
+    insufficientCount: row.insufficient_count || 0,
+    unclassifiedCount: row.unclassified_count || 0,
+    qualificationFinalizedAt: row.qualification_finalized_at || null,
+    qualificationEvaluation: row.qualification_evaluation || null,
     error: row.error || null,
     startedAt: row.started_at || null,
     finishedAt: row.finished_at || null,
@@ -78,7 +85,11 @@ export function listDiscoveryRuns(workspaceId, filters = {}) {
   return paged(rows.map(mapDiscoveryRun), total, filters.page, filters.pageSize);
 }
 
-const UPDATE_COLUMNS = new Set(['status', 'result_count', 'companies_created', 'error', 'started_at', 'finished_at']);
+const UPDATE_COLUMNS = new Set([
+  'status', 'result_count', 'companies_created', 'error', 'started_at', 'finished_at',
+  'qualification_status', 'qualified_count', 'rejected_count', 'insufficient_count', 'unclassified_count',
+  'qualification_finalized_at', 'qualification_evaluation',
+]);
 
 export function updateDiscoveryRun(workspaceId, runId, patch) {
   const entries = Object.entries(patch).filter(([column]) => UPDATE_COLUMNS.has(column));

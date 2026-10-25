@@ -86,6 +86,76 @@
   max-width: 360px;
 }
 
+/* ------------------------------------------------- settings module tabs */
+.page-module-tabs {
+  min-width: 0;
+}
+
+.page-subtabs {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.page-subtabs .segmented {
+  display: flex;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.page-subtabs .segmented button {
+  flex: 0 0 auto;
+}
+
+.page-module-tabs .card-head .row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.page-module-tabs .card-head .segmented {
+  display: flex;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.page-module-tabs .card-head .segmented button {
+  flex: 0 0 auto;
+}
+
+.page-module-body {
+  min-width: 0;
+}
+
+.page-module.hidden {
+  display: none !important;
+}
+
+.page-module-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.page-hostinger-row {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 1200px) {
+  .page-module-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .page-subtabs .segmented {
+    width: 100%;
+  }
+}
+
 /* -------------------------------------------------------------------- agents */
 .page-agent-card {
   text-align: left;
@@ -162,10 +232,6 @@
   flex-wrap: wrap;
 }
 
-.page-usage-tables {
-  align-items: start;
-}
-
 .page-log {
   margin: 0;
   padding: 10px 12px;
@@ -195,10 +261,6 @@
 }
 
 @media (max-width: 900px) {
-  .page-usage-tables {
-    grid-template-columns: 1fr;
-  }
-
   .page-type-select {
     width: 100%;
     min-width: 0;

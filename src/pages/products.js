@@ -9,7 +9,7 @@
 import { append, clear, el } from '../utils/dom.mjs';
 import { api, queryString } from '../app/api.mjs';
 import { can } from '../app/state.mjs';
-import { relativeTime, truncate } from '../utils/format.mjs';
+import { formatDateTime, relativeTime, truncate } from '../utils/format.mjs';
 import {
   badge,
   button,
@@ -56,6 +56,25 @@ const STATUS_OPTIONS = [
   ['draft', '草稿'],
   ['archived', '已归档'],
 ];
+
+const TEMPLATE_STATUS = {
+  draft: ['草稿', 'gray'],
+  pending_approval: ['待确认', 'yellow'],
+  approved: ['已生效', 'green'],
+  disabled: ['已停用', 'gray'],
+};
+
+const EMAIL_LANGUAGES = [
+  ['en', 'English'],
+  ['de', 'Deutsch'],
+  ['fr', 'Français'],
+  ['it', 'Italiano'],
+  ['es', 'Español'],
+  ['nl', 'Nederlands'],
+  ['pl', 'Polski'],
+];
+
+const TEMPLATE_VARIABLES = ['{{companyName}}', '{{contactFirstName}}', '{{country}}', '{{productCatalogueUrl}}'];
 
 let disposed = false;
 let cleanup = [];
@@ -182,6 +201,73 @@ function sanitizeKeywords(value) {
     if (out.length >= MAX_KEYWORDS) break;
   }
   return out;
+}
+
+// ------------------------------------------------------- email templates
+function templateStatusBadge(status) {
+  const found = TEMPLATE_STATUS[status] || [status || '未知', 'gray'];
+  return badge(found[0], found[1], { dot: true });
+}
+
+function languageLabel(value) {
+  const found = EMAIL_LANGUAGES.find(([key]) => key === value);
+  return found ? found[1] : value || '—';
+}
+
+function normalizeTemplateAttachment(item) {
+  if (!item || typeof item !== 'object') return null;
+  return {
+    productFileId: item.productFileId || item.fileId || item.id || null,
+    filename: item.filename || item.name || '附件',
+    mimeType: item.mimeType || item.type || '',
+    sizeBytes: Number(item.sizeBytes ?? item.size ?? 0),
+    publicUrl: item.publicUrl || item.url || '',
+  };
+}
+
+function attachmentLabel(file) {
+  const mimeType = String((file && file.mimeType) || '').toLowerCase();
+  if (mimeType === 'application/pdf') return 'PDF';
+  if (mimeType.startsWith('image/')) return '图片';
+  return mimeType || '文件';
+}
+
+function normalizeTemplate(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = raw.id || raw.templateId || raw.template_id || null;
+  if (!id) return null;
+  const bodyText = raw.bodyText ?? raw.body ?? raw.body_text ?? '';
+  return {
+    id,
+    version: raw.version ?? null,
+    subject: raw.subject || '',
+    bodyText: String(bodyText || ''),
+    language: raw.language || 'en',
+    status: raw.status || 'draft',
+    variables: safeArray(raw.variables || raw.variables_json),
+    attachments: safeArray(raw.attachments || raw.attachments_json)
+      .map(normalizeTemplateAttachment)
+      .filter(Boolean),
+    generatedBy: raw.generatedBy || null,
+    approvedBy: raw.approvedBy || null,
+    approvedAt: raw.approvedAt || null,
+    createdBy: raw.createdBy || null,
+    createdAt: raw.createdAt || null,
+    updatedAt: raw.updatedAt || null,
+  };
+}
+
+/** Accept {template, approved}, {item}, an array, or a bare template object. */
+function parseTemplatePayload(data) {
+  if (Array.isArray(data)) {
+    const items = data.map(normalizeTemplate).filter(Boolean);
+    return { template: items[0] || null, approved: items.find((item) => item.status === 'approved') || null };
+  }
+  const payload = data && typeof data === 'object' ? data : {};
+  const template = normalizeTemplate(payload.template) || normalizeTemplate(payload.item) || normalizeTemplate(payload);
+  const approved =
+    normalizeTemplate(payload.approved) || (template && template.status === 'approved' ? template : null);
+  return { template, approved };
 }
 
 // ------------------------------------------------------------------ page
@@ -779,6 +865,540 @@ export async function render(root, params, ctx) {
     void dialog;
   }
 
+  // ------------------------------------------------------- email templates
+  function openEmailTemplateDialog(product) {
+    const templateState = {
+      loading: true,
+      error: null,
+      template: null,
+      approved: null,
+      versions: [],
+      versionsLoading: false,
+      versionsError: null,
+      preview: null,
+      busy: false,
+      generating: false,
+    };
+    let editorFields = null;
+    let generateFields = null;
+
+    const bodyHost = el('div', 'stack page-template');
+    const statusHost = el('div', 'stack');
+    const editorHost = el('div', 'stack');
+    const versionsHost = el('div', '');
+    const actionsHost = el('div', 'page-template-actions');
+    append(bodyHost, [statusHost, editorHost, versionsHost, actionsHost]);
+
+    const dialog = openModal({
+      title: `产品邮件模板 · ${product.name || '未命名产品'}`,
+      body: bodyHost,
+      size: 'lg',
+      actions: [{ label: '关闭' }],
+    });
+    cleanup.push(() => {
+      try {
+        dialog.close();
+      } catch {
+        // dialog may already be closed
+      }
+    });
+
+    function renderTemplate() {
+      if (disposed) return;
+      renderTemplateStatus();
+      renderTemplateEditor();
+      renderTemplateVersions();
+      renderTemplateActions();
+    }
+
+    function renderTemplateStatus() {
+      clear(statusHost);
+      const current = templateState.preview || templateState.template;
+      const head = el('div', 'page-template-head');
+      const info = el('div', 'page-template-info');
+      append(info, [
+        el('b', '', product.name || '产品'),
+        el('span', 'muted', '邮件模板'),
+        helpTip('只有状态为「已生效」的模板会被用于批量外发。编辑已生效模板会生成新的待确认版本，需重新确认。'),
+      ]);
+      if (current) {
+        append(info, [templateStatusBadge(current.status), el('span', 'page-template-version', `v${current.version ?? '—'}`)]);
+        if (templateState.preview) append(info, [badge('只读预览', 'gray')]);
+      } else {
+        append(info, [badge('无模板', 'gray')]);
+      }
+      append(head, [info]);
+      if (current && current.approvedAt) {
+        append(head, [el('span', 'muted', `生效于 ${formatDateTime(current.approvedAt)}`)]);
+      }
+      statusHost.appendChild(head);
+      if (
+        !templateState.preview &&
+        templateState.approved &&
+        (!templateState.template || templateState.approved.id !== templateState.template.id)
+      ) {
+        const row = el('div', 'page-template-approved-line');
+        append(row, [
+          templateStatusBadge('approved'),
+          el('span', 'muted', `当前已生效版本 v${templateState.approved.version ?? '—'}；编辑中的版本确认后才会替换。`),
+        ]);
+        statusHost.appendChild(row);
+      }
+    }
+
+    function insertTemplateVariable(token) {
+      const fieldNode = editorFields && editorFields.bodyText;
+      if (!fieldNode) return;
+      const value = String(fieldNode.value || '');
+      const start = Number.isInteger(fieldNode.selectionStart) ? fieldNode.selectionStart : value.length;
+      const end = Number.isInteger(fieldNode.selectionEnd) ? fieldNode.selectionEnd : start;
+      fieldNode.value = `${value.slice(0, start)}${token}${value.slice(end)}`;
+      const cursor = start + token.length;
+      try {
+        fieldNode.selectionStart = cursor;
+        fieldNode.selectionEnd = cursor;
+      } catch {
+        // selection is best-effort only
+      }
+      fieldNode.focus();
+    }
+
+    function buildTemplateAttachments(template) {
+      const wrap = el('div', 'page-template-attachments');
+      const head = el('div', 'row');
+      append(head, [
+        el('b', '', '模板附件（只读）'),
+        helpTip('附件来自产品资料中的 PDF / 图片文件，发送时会随邮件附带；模板中不能单独修改附件。'),
+      ]);
+      wrap.appendChild(head);
+      const attachments = safeArray(template.attachments);
+      if (!attachments.length) {
+        wrap.appendChild(el('div', 'muted', '暂无附件；可在产品资料的「图片与 PDF 资料」中添加 PDF。'));
+        return wrap;
+      }
+      for (const file of attachments) {
+        const row = el('div', 'page-template-attachment');
+        const info = el('div', 'page-template-attachment-info');
+        append(info, [
+          el('b', '', file.filename),
+          el('span', 'muted', `${attachmentLabel(file)} · ${formatFileSize(file.sizeBytes)}`),
+        ]);
+        const actions = el('div', 'row');
+        if (file.publicUrl) {
+          append(actions, [
+            button('复制链接', {
+              size: 'sm',
+              variant: 'ghost',
+              iconName: 'copy',
+              onClick: () => copyText(absoluteUrl(file.publicUrl)),
+            }),
+          ]);
+        } else {
+          append(actions, [el('span', 'muted', '无公开链接')]);
+        }
+        append(row, [info, actions]);
+        wrap.appendChild(row);
+      }
+      return wrap;
+    }
+
+    function buildTemplateEmpty() {
+      const wrap = el('div', 'page-template-empty');
+      wrap.appendChild(
+        emptyState({
+          iconName: 'mail',
+          title: '还没有邮件模板',
+          description: '让 AI 基于产品资料生成第一版草稿，人工核对并确认后才能用于批量外发。',
+        }),
+      );
+      const language = select({
+        value: 'en',
+        options: EMAIL_LANGUAGES.map(([value, label]) => ({ value, label })),
+      });
+      const instructions = input({ placeholder: '可选：强调认证、交期、目标市场…' });
+      const label = el('span', '', 'AI 生成模板');
+      const generateBtn = button(null, {
+        variant: 'primary',
+        iconName: 'sparkles',
+        disabled: !writable || templateState.generating || templateState.busy,
+        onClick: () => generateTemplate({ language: language.value, instructions: String(instructions.value || '').trim() }),
+      });
+      generateBtn.appendChild(label);
+      generateFields = { language, instructions, button: generateBtn, label };
+      const generate = el('div', 'page-template-generate');
+      append(generate, [
+        field('生成语言', language),
+        field('生成备注（可选）', instructions, {
+          help: '可补充目标市场、需要强调的卖点等要求；AI 只基于已确认产品资料生成，不编造事实。',
+        }),
+        el('div', 'row', [
+          generateBtn,
+          helpTip('AI 生成的是待确认草稿；请核对主题、正文、变量与附件后再确认生效。'),
+        ]),
+      ]);
+      wrap.appendChild(generate);
+      return wrap;
+    }
+
+    function buildTemplateEditor(template) {
+      const wrap = el('div', 'stack page-template-editor');
+      const meta = el('div', 'page-template-meta');
+      append(meta, [
+        templateStatusBadge(template.status),
+        el('span', 'muted', `版本 v${template.version ?? '—'}`),
+        el('span', 'muted', `更新于 ${formatDateTime(template.updatedAt || template.createdAt)}`),
+      ]);
+      wrap.appendChild(meta);
+
+      const subject = input({ value: template.subject || '' });
+      const bodyText = textarea({ value: template.bodyText || '', rows: 12 });
+      const language = select({
+        value: template.language || 'en',
+        options: EMAIL_LANGUAGES.map(([value, label]) => ({ value, label })),
+      });
+      if (!writable) {
+        subject.disabled = true;
+        bodyText.disabled = true;
+        language.disabled = true;
+      }
+      editorFields = { subject, bodyText, language };
+      const subjectField = field('邮件主题 Subject', subject, {
+        required: true,
+        help: '变量会在发送时替换为真实企业与联系人信息；不要写死具体公司名。',
+      });
+      subjectField.classList.add('span-2');
+      const bodyField = field('正文 Body', bodyText, {
+        required: true,
+        help: '只有已生效模板会用于批量外发；变量请使用下方提供的占位符。',
+      });
+      bodyField.classList.add('span-2');
+      const grid = el('div', 'form-grid');
+      append(grid, [subjectField, field('语言 Language', language), bodyField]);
+      wrap.appendChild(grid);
+
+      const variables = el('div', 'page-template-variables');
+      append(variables, [el('span', 'muted', '可用变量')]);
+      for (const token of TEMPLATE_VARIABLES) {
+        const chip = el('button', 'page-template-var', token);
+        chip.type = 'button';
+        chip.title = `插入 ${token}`;
+        chip.addEventListener('click', () => insertTemplateVariable(token));
+        variables.appendChild(chip);
+      }
+      variables.appendChild(
+        helpTip('发送时由服务端替换：{{companyName}} 企业名、{{contactFirstName}} 联系人名、{{country}} 国家、{{productCatalogueUrl}} 产品 PDF 公开链接。点击变量可插入到正文光标处。'),
+      );
+      wrap.appendChild(variables);
+      wrap.appendChild(buildTemplateAttachments(template));
+      if (!writable) wrap.appendChild(notice('当前角色为只读，不能编辑或确认模板。', 'info'));
+      return wrap;
+    }
+
+    function buildTemplatePreview(template) {
+      const wrap = el('div', 'stack page-template-preview');
+      append(wrap, [
+        el('div', 'row', [
+          badge('只读预览', 'gray'),
+          templateStatusBadge(template.status),
+          el('span', 'muted', `版本 v${template.version ?? '—'}`),
+        ]),
+        field('邮件主题', el('div', 'page-template-readonly', template.subject || '—')),
+        field('正文', el('div', 'page-template-readonly page-template-body', template.bodyText || '—')),
+        field('语言', el('div', 'page-template-readonly', languageLabel(template.language))),
+        buildTemplateAttachments(template),
+        el('div', 'row', [
+          button('返回当前模板', {
+            size: 'sm',
+            variant: 'primary',
+            iconName: 'arrowRight',
+            onClick: () => {
+              templateState.preview = null;
+              renderTemplate();
+            },
+          }),
+        ]),
+      ]);
+      return wrap;
+    }
+
+    function renderTemplateEditor() {
+      clear(editorHost);
+      editorFields = null;
+      generateFields = null;
+      if (templateState.loading) {
+        editorHost.appendChild(loadingBlock('正在加载邮件模板…'));
+        return;
+      }
+      if (templateState.error) {
+        const box = el('div', 'page-template-error');
+        append(box, [
+          notice(`邮件模板加载失败：${templateState.error}`, 'danger'),
+          el('div', 'row', [
+            button('重试', { variant: 'primary', size: 'sm', iconName: 'refresh', onClick: () => loadTemplate() }),
+          ]),
+          helpTip('若后端模板接口尚未就绪，可稍后重试；产品其他编辑不受影响。'),
+        ]);
+        editorHost.appendChild(box);
+        return;
+      }
+      if (templateState.preview) {
+        editorHost.appendChild(buildTemplatePreview(templateState.preview));
+        return;
+      }
+      if (!templateState.template) {
+        editorHost.appendChild(buildTemplateEmpty());
+        return;
+      }
+      editorHost.appendChild(buildTemplateEditor(templateState.template));
+    }
+
+    function renderTemplateVersions() {
+      clear(versionsHost);
+      const section = el('div', 'page-template-history');
+      const head = el('div', 'row-between');
+      append(head, [
+        el('b', '', '版本历史'),
+        el('span', 'muted', templateState.versions.length ? `共 ${templateState.versions.length} 个版本` : ''),
+      ]);
+      section.appendChild(head);
+      if (templateState.versionsLoading) {
+        section.appendChild(loadingBlock('正在加载版本…'));
+      } else if (templateState.versionsError) {
+        const box = el('div', 'page-template-history-error');
+        append(box, [
+          notice(`版本历史加载失败：${templateState.versionsError}`, 'warn'),
+          button('重试', { size: 'sm', iconName: 'refresh', onClick: () => loadVersions() }),
+        ]);
+        section.appendChild(box);
+      } else if (!templateState.versions.length) {
+        section.appendChild(el('div', 'muted', '暂无版本记录'));
+      } else {
+        const list = el('div', 'page-template-versions');
+        for (const version of templateState.versions) {
+          const active = templateState.preview
+            ? templateState.preview.id === version.id
+            : templateState.template && templateState.template.id === version.id;
+          const row = el('div', `page-template-version-row${active ? ' active' : ''}`);
+          const main = el('div', 'page-template-version-main');
+          append(main, [
+            el('b', '', `v${version.version ?? '—'}`),
+            templateStatusBadge(version.status),
+            version.status === 'approved' ? badge('当前生效', 'green') : null,
+            el('span', 'muted', formatDateTime(version.updatedAt || version.createdAt)),
+          ]);
+          const actions = el('div', 'row');
+          append(actions, [
+            button(templateState.preview && templateState.preview.id === version.id ? '正在查看' : '查看', {
+              size: 'sm',
+              variant: 'ghost',
+              iconName: 'eye',
+              disabled: Boolean(templateState.preview && templateState.preview.id === version.id),
+              onClick: () => {
+                templateState.preview = version;
+                renderTemplate();
+              },
+            }),
+          ]);
+          append(row, [main, actions]);
+          list.appendChild(row);
+        }
+        section.appendChild(list);
+      }
+      versionsHost.appendChild(section);
+    }
+
+    function renderTemplateActions() {
+      clear(actionsHost);
+      const closeBtn = button('关闭', { variant: 'ghost', onClick: () => dialog.close() });
+      if (templateState.loading) return;
+      if (templateState.error) {
+        append(actionsHost, [
+          button('重试加载', { variant: 'primary', iconName: 'refresh', onClick: () => loadTemplate() }),
+          closeBtn,
+        ]);
+        return;
+      }
+      if (templateState.preview) {
+        append(actionsHost, [
+          button('返回当前模板', {
+            variant: 'primary',
+            iconName: 'arrowRight',
+            onClick: () => {
+              templateState.preview = null;
+              renderTemplate();
+            },
+          }),
+          closeBtn,
+        ]);
+        return;
+      }
+      if (!templateState.template) {
+        append(actionsHost, [closeBtn]);
+        return;
+      }
+      const template = templateState.template;
+      append(actionsHost, [
+        button('保存修改', {
+          variant: 'primary',
+          iconName: 'check',
+          disabled: !writable || templateState.busy || templateState.generating,
+          onClick: saveTemplate,
+        }),
+        button(template.status === 'approved' ? '已生效' : '确认模板', {
+          variant: 'outline',
+          iconName: 'shield',
+          disabled: !writable || templateState.busy || templateState.generating || template.status === 'approved',
+          onClick: approveTemplate,
+        }),
+        button(templateState.generating ? '生成中…' : 'AI 重新生成', {
+          variant: 'ghost',
+          iconName: 'sparkles',
+          disabled: !writable || templateState.busy || templateState.generating,
+          onClick: () => generateTemplate({}),
+        }),
+        closeBtn,
+      ]);
+    }
+
+    async function loadTemplate() {
+      templateState.loading = true;
+      templateState.error = null;
+      renderTemplate();
+      try {
+        const data = await api.get(`/api/v1/products/${encodeURIComponent(product.id)}/email-template`);
+        const parsed = parseTemplatePayload(data);
+        templateState.template = parsed.template;
+        templateState.approved = parsed.approved;
+        templateState.preview = null;
+      } catch (error) {
+        templateState.template = null;
+        templateState.approved = null;
+        templateState.error = errorMessage(error);
+      } finally {
+        templateState.loading = false;
+        renderTemplate();
+      }
+      void loadVersions();
+    }
+
+    async function loadVersions() {
+      templateState.versionsLoading = true;
+      renderTemplateVersions();
+      try {
+        const data = await api.get(`/api/v1/products/${encodeURIComponent(product.id)}/email-templates`);
+        const items = Array.isArray(data) ? data : safeArray(data && data.items);
+        templateState.versions = items.map(normalizeTemplate).filter(Boolean);
+        templateState.versionsError = null;
+      } catch (error) {
+        templateState.versions = [];
+        templateState.versionsError = errorMessage(error);
+      } finally {
+        templateState.versionsLoading = false;
+        renderTemplateVersions();
+      }
+    }
+
+    async function generateTemplate(options = {}) {
+      if (!writable || templateState.generating || templateState.busy) return;
+      const language = options.language || (templateState.template && templateState.template.language) || 'en';
+      const instructions = options.instructions || '';
+      templateState.generating = true;
+      if (generateFields && generateFields.label) generateFields.label.textContent = '生成中…';
+      if (generateFields && generateFields.button) generateFields.button.disabled = true;
+      renderTemplateActions();
+      try {
+        const payload = { language };
+        if (instructions) payload.instructions = instructions;
+        const data = await api.post(
+          `/api/v1/products/${encodeURIComponent(product.id)}/email-template/generate`,
+          payload,
+        );
+        const parsed = parseTemplatePayload(data);
+        if (!parsed.template && !parsed.approved) {
+          toast('AI 未返回模板内容，请稍后重试', 'warning');
+          return;
+        }
+        toast('已生成模板草稿，请核对后确认', 'success');
+        templateState.preview = null;
+        await loadTemplate();
+      } catch (error) {
+        toast(errorMessage(error), 'error');
+      } finally {
+        templateState.generating = false;
+        if (generateFields && generateFields.label) generateFields.label.textContent = 'AI 生成模板';
+        if (generateFields && generateFields.button) generateFields.button.disabled = false;
+        renderTemplateActions();
+      }
+    }
+
+    async function saveTemplate() {
+      const template = templateState.template;
+      const fields = editorFields;
+      if (!template || !fields || templateState.busy || templateState.generating) return;
+      const subject = String(fields.subject.value || '').trim();
+      const bodyText = String(fields.bodyText.value || '').trim();
+      const language = fields.language.value;
+      if (!subject || !bodyText) {
+        toast('邮件主题与正文不能为空', 'warning');
+        return;
+      }
+      const approvedEdit = template.status === 'approved';
+      if (approvedEdit) {
+        const confirmed = await confirmDialog({
+          title: '保存为新版本',
+          message:
+            '当前模板已生效。保存会生成新的待确认版本，原已生效版本保留在版本历史中；需要重新确认后才能用于批量外发。',
+          confirmText: '保存并生成新版本',
+        });
+        if (!confirmed) return;
+      }
+      templateState.busy = true;
+      renderTemplateActions();
+      try {
+        await api.patch(
+          `/api/v1/products/${encodeURIComponent(product.id)}/email-template/${encodeURIComponent(template.id)}`,
+          { subject, bodyText, language },
+        );
+        toast(approvedEdit ? '已生成新版本，请确认后使用' : '模板已保存', 'success');
+        await loadTemplate();
+      } catch (error) {
+        toast(errorMessage(error), 'error');
+      } finally {
+        templateState.busy = false;
+        renderTemplateActions();
+      }
+    }
+
+    async function approveTemplate() {
+      const template = templateState.template;
+      if (!template || templateState.busy || templateState.generating) return;
+      const confirmed = await confirmDialog({
+        title: '确认模板',
+        message: `确认 v${template.version ?? '—'} 模板生效？确认后该模板将用于批量外发，此前已生效版本会自动停用。`,
+        confirmText: '确认生效',
+      });
+      if (!confirmed) return;
+      templateState.busy = true;
+      renderTemplateActions();
+      try {
+        await api.post(
+          `/api/v1/products/${encodeURIComponent(product.id)}/email-template/${encodeURIComponent(template.id)}/approve`,
+          {},
+        );
+        toast('模板已生效', 'success');
+        await loadTemplate();
+      } catch (error) {
+        toast(errorMessage(error), 'error');
+      } finally {
+        templateState.busy = false;
+        renderTemplateActions();
+      }
+    }
+
+    renderTemplate();
+    void loadTemplate();
+  }
+
   async function setStatus(product, status) {
     try {
       await api.patch(`/api/v1/products/${encodeURIComponent(product.id)}`, { status });
@@ -860,6 +1480,12 @@ export async function render(root, params, ctx) {
         iconName: 'edit',
         disabled: !writable,
         onClick: () => openProductForm(product),
+      }),
+      button('邮件模板', {
+        size: 'sm',
+        variant: 'ghost',
+        iconName: 'mail',
+        onClick: () => openEmailTemplateDialog(product),
       }),
       product.status === 'archived'
         ? button('恢复', {

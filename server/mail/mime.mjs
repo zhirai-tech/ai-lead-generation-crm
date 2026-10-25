@@ -405,6 +405,7 @@ export function buildMimeMessage({
   references = [],
   unsubscribe = null,
   attachments = [],
+  inlineImages = [],
   headers = {},
   messageId = null,
 } = {}) {
@@ -440,24 +441,62 @@ export function buildMimeMessage({
   const boundary = `=_zhirai_${Date.now().toString(36)}_${id('b').slice(-12)}`;
   const bodyEntity = buildBodyEntity({ text: textBody, html: htmlBody, boundary });
 
+  // Inline images live in a multipart/related entity so clients can render them
+  // directly from the message (no remote URL / "display images" prompt).
+  const preparedInline = prepareAttachments(inlineImages);
+  if (preparedInline.warnings.length) {
+    throw mimeError('MIME_ATTACHMENT_REJECTED', preparedInline.warnings.map((warning) => warning.message).join('；'));
+  }
+  let bodyContentType = bodyEntity.contentType;
+  let bodyTransferEncoding = bodyEntity.transferEncoding;
+  let bodyPayload = bodyEntity.body;
+  let relatedBoundary = null;
+  if (preparedInline.attachments.length) {
+    relatedBoundary = `=_zhirai_related_${Date.now().toString(36)}_${id('r').slice(-12)}`;
+    const relatedLine = `--${relatedBoundary}`;
+    const parts = [
+      relatedLine,
+      `Content-Type: ${bodyEntity.contentType}`,
+      `Content-Transfer-Encoding: ${bodyEntity.transferEncoding}`,
+      '',
+      bodyEntity.body.replace(/\r\n$/, ''),
+    ];
+    preparedInline.attachments.forEach((image, index) => {
+      const cid = inlineImages[index]?.cid || `product-image-${index + 1}`;
+      parts.push(
+        relatedLine,
+        `Content-Type: ${image.mimeType}; ${formatAttachmentFilenameParam(image.filename, 'name')}`,
+        'Content-Transfer-Encoding: base64',
+        `Content-ID: <${cid}>`,
+        `Content-Disposition: inline; ${formatAttachmentFilenameParam(image.filename)}`,
+        '',
+        base64Lines(image.content),
+      );
+    });
+    parts.push(`${relatedLine}--`, '');
+    bodyContentType = `multipart/related; boundary="${relatedBoundary}"`;
+    bodyTransferEncoding = '7bit';
+    bodyPayload = parts.join('\r\n');
+  }
+
   // Attachments: multipart/mixed wrapper around the body entity.
   const preparedAttachments = prepareAttachments(attachments);
   if (preparedAttachments.warnings.length) {
     throw mimeError('MIME_ATTACHMENT_REJECTED', preparedAttachments.warnings.map((warning) => warning.message).join('；'));
   }
-  let contentType = bodyEntity.contentType;
-  let transferEncoding = bodyEntity.transferEncoding;
-  let messageBody = bodyEntity.body;
+  let contentType = bodyContentType;
+  let transferEncoding = bodyTransferEncoding;
+  let messageBody = bodyPayload;
   let mixedBoundary = null;
   if (preparedAttachments.attachments.length) {
     mixedBoundary = `=_zhirai_mixed_${Date.now().toString(36)}_${id('c').slice(-12)}`;
     const boundaryLine = `--${mixedBoundary}`;
     const parts = [
       boundaryLine,
-      `Content-Type: ${bodyEntity.contentType}`,
-      `Content-Transfer-Encoding: ${bodyEntity.transferEncoding}`,
+      `Content-Type: ${bodyContentType}`,
+      `Content-Transfer-Encoding: ${bodyTransferEncoding}`,
       '',
-      bodyEntity.body.replace(/\r\n$/, ''),
+      bodyPayload.replace(/\r\n$/, ''),
     ];
     for (const attachment of preparedAttachments.attachments) {
       parts.push(boundaryLine, ...attachmentPartLines(attachment));

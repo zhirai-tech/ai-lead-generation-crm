@@ -174,9 +174,57 @@ export function createCompany(workspaceId, input, context = {}) {
   return createCompanyRecord(workspaceId, { ...input, domain }, context);
 }
 
+export function computeContactCompleteness(company, { contactsCount = 0, emailCount = 0 } = {}) {
+  const hasDomain = Boolean(company.domain || company.website);
+  const hasEmail = Number(emailCount) > 0;
+  const hasPhone = Boolean(company.phone);
+  const hasAddress = Boolean(company.address);
+  const hasLinkedin = Boolean(company.linkedinUrl);
+  let score = 0;
+  if (hasDomain) score += 20;
+  if (hasEmail) score += 25;
+  if (hasPhone) score += 20;
+  if (hasAddress) score += 15;
+  if (hasLinkedin) score += 5;
+  if (Number(contactsCount) > 0) score += 10;
+  let level = 'D';
+  if (hasDomain && hasEmail && hasPhone && hasAddress) level = 'A';
+  else if (hasDomain && hasEmail && hasPhone) level = 'B';
+  else if (hasDomain && (hasEmail || hasPhone)) level = 'C';
+  else if (hasDomain) level = 'D';
+  else level = 'none';
+  return {
+    score: Math.min(100, score),
+    level,
+    hasDomain,
+    hasEmail,
+    hasPhone,
+    hasAddress,
+    hasLinkedin,
+  };
+}
+
+function withCompleteness(company) {
+  const completeness = computeContactCompleteness(company, {
+    contactsCount: company.contactsCount ?? company.contactCount ?? 0,
+    emailCount: company.emailCount ?? 0,
+  });
+  const status = String(company.status || 'new');
+  let leadStage = 'potential';
+  if (status === 'contacted') leadStage = 'contacted';
+  else if (status === 'replied') leadStage = 'intent';
+  else if (status === 'customer') leadStage = 'customer';
+  else if (status === 'qualified') leadStage = 'qualified';
+  else if (status === 'disqualified' || status === 'archived') leadStage = 'excluded';
+  else if (!completeness.hasDomain) leadStage = 'discovered';
+  else if (!completeness.hasEmail) leadStage = 'new_lead';
+  else leadStage = 'potential';
+  return { ...company, contactCompleteness: completeness, leadStage };
+}
+
 export function listCompanies(workspaceId, filters, sort) {
   const limit = filters.limit ?? filters.pageSize ?? 25;
-  return companiesRepo.listCompanies(workspaceId, {
+  const result = companiesRepo.listCompanies(workspaceId, {
     ...filters,
     limit,
     offset: filters.offset ?? 0,
@@ -185,6 +233,10 @@ export function listCompanies(workspaceId, filters, sort) {
     sortKey: sort?.key,
     sortDirection: sort?.direction,
   });
+  return {
+    ...result,
+    items: (result.items || []).map(withCompleteness),
+  };
 }
 
 export function getCompanyOrThrow(workspaceId, companyId) {
@@ -312,6 +364,10 @@ export async function bulkCompanyAction(workspaceId, { action, ids, productId = 
       companiesRepo.updateCompany(workspaceId, company.id, { status: 'archived', updated_at: now });
       affected += 1;
     }
+  } else if (action === 'delete') {
+    for (const company of companies) {
+      if (companiesRepo.softDeleteCompany(workspaceId, company.id)) affected += 1;
+    }
   } else if (action === 'assign') {
     const owner = resolveOwner(workspaceId, ownerUserId);
     for (const company of companies) {
@@ -324,6 +380,55 @@ export async function bulkCompanyAction(workspaceId, { action, ids, productId = 
     for (const company of companies) {
       await scoreCompany({ workspaceId, companyId: company.id, productId, actorId: context.actorId || null });
       affected += 1;
+    }
+  } else if (action === 'enrich') {
+    const { enqueueJob } = await import('../jobs/queue.mjs');
+    for (const company of companies) {
+      try {
+        enqueueJob({
+          workspaceId,
+          type: 'company.enrich',
+          payload: { companyId: company.id, companyName: company.name },
+          dedupeKey: `company.enrich:${workspaceId}:${company.id}`,
+          createdBy: context.actorId || null,
+          maxAttempts: 3,
+          priority: 80,
+        });
+        affected += 1;
+      } catch {
+        // keep going: one blocked queue write must not stop the batch
+      }
+    }
+  } else if (action === 'draft') {
+    const drafts = await import('./drafts.mjs');
+    const contactsRepo = await import('../repositories/contacts.mjs');
+    const language = context.language || 'en';
+    for (const company of companies) {
+      const contact = contactsRepo.listContactsForCompany(workspaceId, company.id, { limit: 10 })
+        .find((item) => item.email && item.emailNormalized);
+      if (!contact) continue;
+      try {
+        const draft = drafts.create(workspaceId, {
+          companyId: company.id,
+          contactId: contact.id,
+          language,
+          subject: '',
+          bodyText: '',
+        }, { actorId: context.actorId || null });
+        affected += 1;
+        try {
+          await drafts.generateDraft({
+            workspaceId,
+            draftId: draft.id,
+            actorType: 'user',
+            actorId: context.actorId || null,
+          });
+        } catch {
+          // keep the empty draft; it can be generated later from the drafts page
+        }
+      } catch {
+        // one model/provider failure must not stop the whole batch
+      }
     }
   } else if (action === 'status') {
     if (!COMPANY_STATUSES.includes(context.status)) throw validationError('企业状态不在允许范围内');

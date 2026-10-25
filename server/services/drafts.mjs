@@ -54,7 +54,7 @@ export function resetProductFilesLoaderForTests() {
   productFilesLoaderOverride = null;
 }
 
-/** Keep only PDFs that can actually be sent, cap at 3, drop incomplete rows. */
+/** Keep only sendable PDFs (with a public link) and product images, cap at 3. */
 function normalizeProductAttachments(files) {
   if (!Array.isArray(files)) return [];
   const normalized = [];
@@ -62,17 +62,21 @@ function normalizeProductAttachments(files) {
   for (const file of files) {
     if (!file || typeof file !== 'object') continue;
     const mimeType = String(file.mimeType ?? file.mime_type ?? '').toLowerCase();
-    if (mimeType !== 'application/pdf') continue;
+    const isPdf = mimeType === 'application/pdf';
+    const isImage = ['image/png', 'image/jpeg', 'image/webp'].includes(mimeType);
+    if (!isPdf && !isImage) continue;
     const publicUrl = typeof file.publicUrl === 'string' ? file.publicUrl.trim() : '';
+    // PDFs are useful in the body via a public link; images are attached directly.
+    if (isPdf && !publicUrl) continue;
     const productFileId = file.productFileId ?? file.id ?? null;
-    if (!publicUrl || !productFileId || seen.has(productFileId)) continue;
+    if (!productFileId || seen.has(productFileId)) continue;
     seen.add(productFileId);
     normalized.push({
       productFileId,
-      filename: String(file.filename || 'document.pdf').slice(0, 255),
-      mimeType: 'application/pdf',
+      filename: String(file.filename || (isPdf ? 'document.pdf' : 'product-image.png')).slice(0, 255),
+      mimeType,
       sizeBytes: Number(file.sizeBytes ?? file.size_bytes ?? 0) || 0,
-      publicUrl,
+      publicUrl: isPdf ? publicUrl : '',
     });
     if (normalized.length >= MAX_DRAFT_ATTACHMENTS) break;
   }
@@ -443,6 +447,38 @@ function normalizeGeneratedOutput(output, { fallbackLanguage }) {
 }
 
 /**
+ * Deterministic fallback used only when the configured model is unavailable.
+ * It never invents certifications, prices or customer facts; it simply turns
+ * the product/company facts already in the workspace into a reviewable draft.
+ */
+function buildTemplateDraft(context, language) {
+  const company = context.company || {};
+  const product = context.product || {};
+  const contact = context.contact || {};
+  const recipient = contact.fullName || contact.firstName || 'Purchasing Team';
+  const productName = product.name || 'our product';
+  const companyName = company.name || 'your company';
+  const applications = Array.isArray(product.applications) && product.applications.length
+    ? product.applications.slice(0, 3).join(', ')
+    : null;
+  const german = String(language || '').toLowerCase().startsWith('de');
+  const subject = german
+    ? `Anfrage: ${productName} – mögliche Zusammenarbeit mit ${companyName}`
+    : `Partnership inquiry: ${productName} for ${companyName}`;
+  const body = german
+    ? `Guten Tag ${recipient},\n\nwir haben ${companyName} als möglichen Partner im Bereich ${company.industry || 'B2B'} gefunden.\n\nWir liefern ${productName}${applications ? ` für ${applications}` : ''}. Wenn Sie Interesse an einer möglichen Zusammenarbeit haben, senden wir Ihnen gerne weitere Informationen und ein unverbindliches Angebot.\n\nMit freundlichen Grüßen`
+    : `Hello ${recipient},\n\nWe found ${companyName} while researching potential B2B partners${company.industry ? ` in ${company.industry}` : ''}.\n\nWe supply ${productName}${applications ? ` for ${applications}` : ''}. If this is relevant, we would be happy to send more information and a non-binding quotation.\n\nBest regards`;
+  return {
+    subject,
+    bodyText: body,
+    language: german ? 'de' : String(language || 'en'),
+    quality: { score: 45, notes: ['model_unavailable_template_fallback'] },
+    guard: {},
+    templateFallback: true,
+  };
+}
+
+/**
  * Contract 7.2: generate a personalised outreach draft for an existing draft
  * row. Loads company facts + product + ICP + campaign step + history, calls the
  * agent layer and persists the validated result.
@@ -462,8 +498,17 @@ export async function generateDraft({ workspaceId, draftId, actorType = 'system'
     publicUrl: absolutePublicUrl(attachment.publicUrl),
   }));
   const startedAt = nowIso();
-  const output = await callAgent('generateOutreachDraft', { workspaceId, context, language });
-  const normalized = normalizeGeneratedOutput(output, { fallbackLanguage: language });
+  let templateFallback = false;
+  let normalized;
+  try {
+    const output = await callAgent('generateOutreachDraft', { workspaceId, context, language });
+    normalized = normalizeGeneratedOutput(output, { fallbackLanguage: language });
+    normalized.templateFallback = false;
+  } catch (error) {
+    if (process.env.DRAFT_TEMPLATE_FALLBACK !== '1') throw error;
+    normalized = buildTemplateDraft(context, language);
+    templateFallback = true;
+  }
   const requireApproval = context.campaign ? context.campaign.requireApproval !== false : Boolean(settings.outreach?.requireApproval ?? true);
   const nextStatus = requireApproval ? 'pending_approval' : 'approved';
   const candidateExecutionId = normalized.executionId || latestAgentExecutionId(workspaceId, 'outreach_writer', startedAt);
@@ -497,6 +542,7 @@ export async function generateDraft({ workspaceId, draftId, actorType = 'system'
       quality: normalized.quality,
       guard: normalized.guard,
       agentExecutionId: generatedBy,
+      templateFallback,
       attachmentCount: attachments.length,
       attachmentFilenames: attachments.map((attachment) => attachment.filename),
     },

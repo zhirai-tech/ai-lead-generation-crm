@@ -194,16 +194,19 @@ export function listProductFiles(workspaceId, productId) {
   return productsRepo.listFilesForProduct(workspaceId, product.id).map((row) => buildFileView(product, row));
 }
 
-/** Contract for t-crm email attachments: PDF documents only, with public links. */
+/** Products files that may travel with an outreach email: PDFs with public links, plus images as plain attachments. */
 export function listProductFilesForEmail(workspaceId, productId) {
   return listProductFiles(workspaceId, productId)
-    .filter((file) => file.kind === 'document' && file.mimeType === 'application/pdf' && file.publicUrl)
+    .filter((file) => (
+      (file.kind === 'document' && file.mimeType === 'application/pdf' && file.publicUrl) ||
+      (file.kind === 'image' && ['image/png', 'image/jpeg', 'image/webp'].includes(file.mimeType))
+    ))
     .map((file) => ({
       productFileId: file.id,
       filename: file.filename,
       mimeType: file.mimeType,
       sizeBytes: file.sizeBytes,
-      publicUrl: file.publicUrl,
+      publicUrl: file.publicUrl || null,
     }));
 }
 

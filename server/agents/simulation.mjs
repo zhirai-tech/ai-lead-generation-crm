@@ -1303,6 +1303,14 @@ function buildKeywordResearch(input) {
   };
 }
 
+function buildToolAgent(input) {
+  return {
+    action: 'finish',
+    reason: '当前使用内置模拟 Provider，没有真实模型决策可用。',
+    answer: '当前为离线模拟模型，未调用任何只读工具；请配置真实本地或远程模型后再运行 Agent 任务。',
+  };
+}
+
 const BUILDERS = {
   orchestrator: buildOrchestrator,
   market_research: buildMarketResearch,
@@ -1315,6 +1323,7 @@ const BUILDERS = {
   compliance_guard: buildCompliance,
   quality_review: buildQualityReview,
   keyword_research: buildKeywordResearch,
+  tool_agent: buildToolAgent,
 };
 
 /** Build a structurally valid, deterministic sample output for one role. */

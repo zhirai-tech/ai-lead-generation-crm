@@ -181,7 +181,7 @@ export const OUTPUT_SCHEMAS = Object.freeze({
     ),
     rationale: text(2000),
     suggestedReply: text(4000, 0),
-    nextAction: text(300),
+    nextAction: text(300, 0),
   }),
 
   follow_up_planning: object({
@@ -237,6 +237,26 @@ export const OUTPUT_SCHEMAS = Object.freeze({
     searchQueries: list(text(200), 10),
     notes: text(1000),
   }),
+
+  // Internal Phase-1 role: one bounded read-only action per model decision.
+  tool_agent: object({
+    action: enumOf(['call_tool', 'finish'], 20),
+    tool: enumOf(['company.list', 'company.get', 'company.evidence', 'browser.search'], 40),
+    reason: text(1000),
+    arguments: object({
+      q: text(200, 0),
+      country: text(2, 0),
+      status: text(40, 0),
+      hasEmail: { type: 'boolean' },
+      hasPhone: { type: 'boolean' },
+      pageSize: integer(1, 50),
+      companyId: text(120, 0),
+      query: text(500, 0),
+      engine: enumOf(['duckduckgo', 'bing'], 20),
+      maxResults: integer(1, 10),
+    }, []),
+    answer: text(4000, 0),
+  }, ['action', 'reason']),
 });
 
 export function getOutputSchema(role) {

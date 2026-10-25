@@ -43,10 +43,13 @@ const MAX_MX_LOOKUP_MS = 5000;
 
 // Test hook: allows unit tests to stub DNS without touching the network.
 let mxResolver = (domain) => dns.resolveMx(domain);
+let customMxResolver = false;
 export function setMxResolverForTests(resolver) {
+  customMxResolver = typeof resolver === 'function';
   mxResolver = typeof resolver === 'function' ? resolver : (domain) => dns.resolveMx(domain);
 }
 export function resetMxResolverForTests() {
+  customMxResolver = false;
   mxResolver = (domain) => dns.resolveMx(domain);
 }
 
@@ -61,6 +64,40 @@ function withTimeout(promise, ms, fallback) {
   return Promise.race([promise, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+}
+
+/**
+ * Resolve MX through DNS-over-HTTPS when the host resolver is unavailable
+ * (common on locked-down Windows/containers). Returns the same shape as
+ * lookupDomainMx or null when DoH also fails.
+ */
+async function lookupMxViaDoh(domain) {
+  const endpoints = [
+    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(domain)}&type=MX`,
+    `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=MX`,
+  ];
+  for (const endpoint of endpoints) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    try {
+      const response = await fetch(endpoint, {
+        headers: { Accept: 'application/dns-json' },
+        signal: controller.signal,
+      });
+      if (!response.ok) continue;
+      const payload = await response.json();
+      const records = (payload.Answer || [])
+        .filter((answer) => Number(answer.type) === 15)
+        .map((answer) => String(answer.data || '').replace(/^\d+\s+/, '').replace(/\.$/, '').trim())
+        .filter(Boolean);
+      if (records.length) return { result: 'passed', records, error: null };
+    } catch {
+      // try the next endpoint
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
 }
 
 /**
@@ -80,6 +117,8 @@ export async function lookupDomainMx(domain) {
     if (['ENOTFOUND', 'ENODATA', 'NXDOMAIN'].includes(code)) {
       return { result: 'failed', records: [], error: code };
     }
+    const doh = customMxResolver ? null : await lookupMxViaDoh(domain);
+    if (doh) return doh;
     // Network unavailable / SERVFAIL / timeout: cannot decide.
     return { result: 'unknown', records: [], error: code };
   }

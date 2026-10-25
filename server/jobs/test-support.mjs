@@ -60,7 +60,9 @@ export async function createWorkerTestContext({ withServer = true } = {}) {
   ensureRuntimeDirs(cfg);
   setSecretForTests(randomBytes(48));
   const db = openDatabase(cfg.dbFile);
-  migrate(db, path.join(baseConfig.rootDir, 'server', 'db', 'migrations'));
+  const migrationsDir = path.join(baseConfig.rootDir, 'server', 'db', 'migrations');
+  const allowlist = fs.readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
+  migrate(db, migrationsDir, { allowlist, expectedDbPath: cfg.dbFile, actualDbPath: cfg.dbFile });
   const logger = createLogger({ level: 'silent' });
 
   const boot = bootstrapWorkspace({

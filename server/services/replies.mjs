@@ -179,6 +179,33 @@ export function escalateUnsubscribe(workspaceId, { company, contact, thread, mes
 }
 
 /**
+ * Strip quoted history and legal footers before classification. A reply such as
+ * "收到了" must not be classified as an unsubscribe just because the quoted
+ * original message contains an "Unsubscribe / 退订" footer.
+ */
+export function stripQuotedReplyText(input) {
+  let text = String(input || '').replace(/\r\n/g, '\n');
+  const markers = [
+    /\n?On [^\n]{0,300}(?:\n[^\n]{0,300})?wrote:\s*\n/i,
+    /\n?[^\n]*写道[:：]\s*\n/,
+    /\n?-{2,}\s*Original Message\s*-{2,}/i,
+    /\n?From:\s[^\n]*\n(?:Sent|Date|To|Subject):/i,
+  ];
+  for (const marker of markers) {
+    const match = text.match(marker);
+    if (match && match.index > 0) text = text.slice(0, match.index);
+  }
+  const kept = [];
+  for (const line of text.split('\n')) {
+    if (/^\s*>/.test(line)) continue;
+    if (/^\s*(unsubscribe|退订|取消订阅)\b/i.test(line)) break;
+    if (/^-{2,}\s*$/.test(line) && /unsubscribe|退订/i.test(text)) continue;
+    kept.push(line);
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
  * Contract 7.2: classify one inbound message and persist the outcome.
  * @returns {{classification: object, automationState: object}}
  */
@@ -196,7 +223,7 @@ export async function classifyInboundMessage({ workspaceId, messageId, actorType
     message: {
       id: message.id,
       subject: message.subject || '',
-      bodyText: String(message.bodyText || '').slice(0, 8000),
+      bodyText: stripQuotedReplyText(message.bodyText).slice(0, 8000),
       fromAddress: message.fromAddress,
       fromName: message.fromName,
       receivedAt: message.receivedAt || message.createdAt,

@@ -61,7 +61,9 @@ export function createAgentTestEnv({ settingsPatch = null } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zhirai-agents-'));
   const dbFile = path.join(dir, 'agents-test.sqlite');
   const db = openDatabase(dbFile);
-  migrate(db, path.join(ROOT_DIR, 'server', 'db', 'migrations'));
+  const migrationsDir = path.join(ROOT_DIR, 'server', 'db', 'migrations');
+  const allowlist = fs.readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
+  migrate(db, migrationsDir, { allowlist, expectedDbPath: dbFile, actualDbPath: dbFile });
   setSecretForTests(randomBytes(48));
   const bootstrap = bootstrapWorkspace({
     workspaceName: 'Agent 单元测试空间',

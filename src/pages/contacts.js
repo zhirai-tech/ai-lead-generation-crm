@@ -37,7 +37,7 @@ import { CONFIDENCE_OPTIONS, confidenceLabel, countryOptions } from './companies
 
 export const meta = {
   title: '联系人库',
-  help: '企业联系人的统一记录。邮箱状态区分「推测 / 未验证 / 有效 / 有风险 / 无效」：推测邮箱只是模式匹配结果，必须完成语法与 MX 校验后才能用于正式外联。',
+  help: '联系人库 = 所有企业下的联系人总库（采购经理、品类经理、技术负责人等）。企业发现先得到企业，联系人再在企业详情或这里补充/导入；邮箱状态区分推测/未验证/有效/有风险/无效，推测邮箱不能直接正式外联。',
 };
 
 const PAGE_SIZE = 25;

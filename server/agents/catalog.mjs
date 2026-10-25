@@ -98,6 +98,15 @@ const META = [
     capabilities: ['research', 'keywords', 'seo'],
     inputFields: ['product', 'icp'],
   },
+  {
+    role: 'tool_agent',
+    name: 'Tool Agent',
+    nameZh: '只读工具决策',
+    description: '内部角色：根据目标和真实工具结果决定下一步只读工具调用或结束任务。',
+    capabilities: ['planning', 'tool_selection', 'evidence'],
+    inputFields: ['goal', 'toolCatalog', 'history', 'lastToolResult'],
+    internal: true,
+  },
 ];
 
 for (const entry of META) {
@@ -120,7 +129,7 @@ const DEFINITION_MAP = new Map(DEFINITIONS.map((definition) => [definition.role,
 
 /** Public, browser-safe catalogue entries (no prompt text, no schema bodies). */
 export const AGENT_CATALOG = Object.freeze(
-  DEFINITIONS.map((definition) =>
+  DEFINITIONS.filter((definition) => definition.internal !== true).map((definition) =>
     Object.freeze({
       role: definition.role,
       name: definition.name,

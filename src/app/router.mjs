@@ -23,6 +23,7 @@ const ROUTES = [
   { path: '/inbox', loader: () => import('../pages/inbox.js') },
   { path: '/deals', loader: () => import('../pages/deals.js') },
   { path: '/automation', loader: () => import('../pages/automation.js') },
+  { path: '/assistant', loader: () => import('../pages/assistant.js') },
   { path: '/agents', loader: () => import('../pages/agents.js') },
   { path: '/jobs', loader: () => import('../pages/jobs.js') },
   { path: '/settings', loader: () => import('../pages/settings.js') },

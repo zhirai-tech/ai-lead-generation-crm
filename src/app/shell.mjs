@@ -7,6 +7,33 @@ import { relativeTime, formatDate } from '../utils/format.mjs';
 import { api } from './api.mjs';
 import { state, clearSession, setNavBadges, events } from './state.mjs';
 import { icon } from '../components/ui.mjs';
+import { mountAssistant } from '../components/assistant.mjs';
+
+const DESKTOP_NAV = [
+  {
+    label: '获客',
+    items: [
+      { path: '/discovery', label: '企业发现', icon: 'compass' },
+      { path: '/companies', label: '潜在客户', icon: 'building' },
+    ],
+  },
+  {
+    label: '营销',
+    items: [
+      { path: '/icps', label: '客户画像', icon: 'target' },
+      { path: '/products', label: '产品资料', icon: 'box' },
+      { path: '/drafts', label: '邮件草稿', icon: 'mail' },
+      { path: '/approvals', label: '发送审批', icon: 'checkSquare', badge: 'approvals' },
+    ],
+  },
+  {
+    label: '系统',
+    items: [
+      { path: '/assistant', label: 'AI 助理', icon: 'sparkles' },
+      { path: '/settings', label: '系统设置', icon: 'settings' },
+    ],
+  },
+];
 
 const NAV = [
   {
@@ -38,6 +65,7 @@ const NAV = [
   {
     label: '智能中枢',
     items: [
+      { path: '/assistant', label: 'AI 助理', icon: 'sparkles' },
       { path: '/agents', label: '智能代理', icon: 'brain' },
       { path: '/jobs', label: '任务队列', icon: 'activity' },
     ],
@@ -48,6 +76,9 @@ const NAV = [
   },
 ];
 
+const DESKTOP = Boolean(window.zhiraiDesktop) || new URLSearchParams(window.location.search).get('desktop') === '1';
+const ACTIVE_NAV = DESKTOP ? DESKTOP_NAV : NAV;
+
 export function buildShell({ container, onLogout }) {
   clear(container);
   const shell = el('div', 'app-shell');
@@ -56,7 +87,7 @@ export function buildShell({ container, onLogout }) {
   // ---------------------------------------------------------------- sidebar
   const sidebar = el('aside', 'sidebar');
   const brand = el('a', 'brand');
-  brand.href = '#/dashboard';
+  brand.href = DESKTOP ? '#/discovery' : '#/dashboard';
   const logo = el('img', 'brand-logo');
   logo.src = '/assets/brand/app-icons/128x128.png';
   logo.alt = 'ZHIRAI';
@@ -69,7 +100,7 @@ export function buildShell({ container, onLogout }) {
   const nav = el('nav', 'nav');
   nav.setAttribute('aria-label', '主导航');
   const links = new Map();
-  for (const group of NAV) {
+  for (const group of ACTIVE_NAV) {
     nav.appendChild(el('div', 'nav-group', group.label));
     for (const item of group.items) {
       const link = el('a', 'nav-link');
@@ -123,6 +154,11 @@ export function buildShell({ container, onLogout }) {
   notifBtn.title = '通知';
   notifBtn.setAttribute('aria-label', '通知');
   notifBtn.appendChild(icon('bell', 17));
+  const assistantBtn = el('button', 'icon-btn assistant-entry');
+  assistantBtn.type = 'button';
+  assistantBtn.title = '打开 ZHIRAI 助理';
+  assistantBtn.setAttribute('aria-label', '打开 ZHIRAI 助理');
+  assistantBtn.appendChild(icon('sparkles', 17));
   const notifDot = el('span', 'dot hidden');
   notifBtn.appendChild(notifDot);
   const userChip = el('button', 'user-chip');
@@ -134,12 +170,53 @@ export function buildShell({ container, onLogout }) {
   userChip.appendChild(el('span', 'detail-avatar soft', (session?.user?.name || 'Z').slice(0, 1)));
   userChip.appendChild(userMeta);
   userChip.appendChild(icon('chevronDown', 14));
-  append(topbar, [menuToggle, titleWrap, spacer, searchWrap, refreshBtn, notifBtn, userChip]);
+  append(topbar, [menuToggle, titleWrap, spacer, searchWrap, refreshBtn, assistantBtn, notifBtn, userChip]);
 
   const view = el('section', 'view');
   append(main, [topbar, view]);
   append(shell, [sidebar, main]);
   container.appendChild(shell);
+  const assistant = mountAssistant();
+  if (assistantBtn) {
+    assistantBtn.hidden = false;
+    assistantBtn.addEventListener('click', () => assistant?.open());
+  }
+
+  // Compact text fallback when microphone/voice is unavailable. This stays
+  // independent from the assistant page and shows one short line at a time.
+  const quick = el('div', 'assistant-quick');
+  const quickLine = el('div', 'assistant-quick-line', '助手待命');
+  const quickInput = el('input', 'assistant-quick-input');
+  quickInput.type = 'text';
+  quickInput.placeholder = '给助理发一句话…';
+  const quickSend = el('button', 'assistant-quick-send', '发送');
+  quickSend.type = 'button';
+  const quickRow = el('div', 'assistant-quick-row');
+  append(quickRow, [quickInput, quickSend]);
+  append(quick, [quickLine, quickRow]);
+  document.body.appendChild(quick);
+  const submitQuick = async () => {
+    const text = quickInput.value.trim();
+    if (!text) return;
+    quickInput.value = '';
+    quickLine.textContent = '正在思考…';
+    quick.classList.add('busy');
+    try {
+      const result = await api.post('/api/v1/assistant/chat', { messages: [{ role: 'user', content: text }] });
+      quickLine.textContent = String(result?.reply || '已处理').replace(/\s+/g, ' ').slice(0, 160);
+    } catch (error) {
+      quickLine.textContent = `失败：${error?.message || '请求失败'}`.slice(0, 160);
+    } finally {
+      quick.classList.remove('busy');
+    }
+  };
+  quickSend.addEventListener('click', submitQuick);
+  quickInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void submitQuick();
+    }
+  });
 
   // ------------------------------------------------------------- behaviours
   const scrim = el('button', 'sidebar-scrim hidden');

@@ -7,7 +7,7 @@
 import '../server/core/silence-sqlite-warning.mjs';
 import path from 'node:path';
 import { config } from '../server/config.mjs';
-import { closeDatabase, get, migrate, openDatabase, run } from '../server/core/db.mjs';
+import { assertOpenedDatabasePath, assertSchemaReady, closeDatabase, get, migrate, openDatabase, run, validateMigrationPolicy } from '../server/core/db.mjs';
 import { hashPassword } from '../server/core/crypto.mjs';
 import { nowIso } from '../server/core/time.mjs';
 
@@ -21,9 +21,12 @@ if (password.length < 10 || !/[A-Za-z]/.test(password) || !/\d/.test(password)) 
   process.exit(1);
 }
 
+validateMigrationPolicy({ allowlist: config.migrations.allowlist, expectedDbPath: config.migrations.expectedDbPath, actualDbPath: config.dbFile, dataDir: config.dataDir, expectedDataDir: process.env.DATA_DIR || config.dataDir });
 const db = openDatabase(config.dbFile);
 try {
-  migrate(db, path.join(config.rootDir, 'server', 'db', 'migrations'));
+  assertOpenedDatabasePath(db, config.migrations.expectedDbPath);
+  migrate(db, path.join(config.rootDir, 'server', 'db', 'migrations'), { allowlist: config.migrations.allowlist, expectedDbPath: config.migrations.expectedDbPath, actualDbPath: config.dbFile });
+  assertSchemaReady(db);
   const user = get('SELECT id, email FROM users WHERE email = ? COLLATE NOCASE', [email]);
   if (!user) {
     console.error(`未找到用户：${email}`);

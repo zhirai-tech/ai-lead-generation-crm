@@ -34,6 +34,7 @@ export const JOB_TYPES = Object.freeze([
   'followup.plan',
   'campaign.tick',
   'maintenance.retention',
+  'agent.task',
 ]);
 
 export const TERMINAL_STATUSES = Object.freeze(['succeeded', 'failed', 'cancelled', 'dead']);

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZHIRAI 模型配置</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b0f14; --panel:#121923; --line:#24303d; --text:#e8eef6; --muted:#8fa0b3; --accent:#45d6a8; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:var(--bg); color:var(--text); font:14px/1.6 "Segoe UI",system-ui,sans-serif; }
+    main { width:min(760px,92vw); background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:26px; }
+    h1 { font-size:20px; margin:0 0 4px; }
+    p { color:var(--muted); margin:0 0 18px; }
+    .tabs { display:flex; gap:8px; margin-bottom:18px; }
+    .tab { flex:1; padding:10px; border:1px solid var(--line); background:transparent; color:var(--muted); border-radius:9px; cursor:pointer; }
+    .tab.active { border-color:var(--accent); color:var(--text); }
+    .fields { display:grid; gap:12px; }
+    label { display:grid; gap:6px; color:var(--muted); font-size:13px; }
+    input { width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:#0d141c; color:var(--text); }
+    .row { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+    button { padding:10px 16px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--text); cursor:pointer; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#062018; font-weight:600; }
+    #status { margin-top:16px; color:var(--muted); min-height:24px; white-space:pre-wrap; }
+    .hidden { display:none; }
+    .note { margin-top:14px; font-size:12px; color:var(--muted); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>配置模型</h1>
+  <p>首次启动需要配置一个模型；也可以直接使用远程 API。配置完成后进入工作台。</p>
+  <div class="tabs">
+    <button class="tab active" data-tab="remote">远程 API</button>
+    <button class="tab" data-tab="local">本地模型</button>
+  </div>
+  <section id="remote">
+    <div class="fields">
+      <label>API 地址<input id="remote-base" value="https://api.deepseek.com" autocomplete="off"></label>
+      <label>模型名称<input id="remote-model" value="deepseek-flash" autocomplete="off"></label>
+      <label>API Key<input id="remote-key" type="password" placeholder="粘贴你的 API Key" autocomplete="new-password"></label>
+    </div>
+    <div class="row"><button class="primary" id="save-remote">保存并测试</button></div>
+  </section>
+  <section id="local" class="hidden">
+    <div class="fields">
+      <label>Ollama 地址<input id="local-base" value="http://127.0.0.1:11434" autocomplete="off"></label>
+      <label>模型名称<input id="local-model" value="qwen2.5:3b" autocomplete="off"></label>
+    </div>
+    <div class="row">
+      <button class="primary" id="detect-install">自动检测安装</button>
+      <button id="save-local">保存并测试</button>
+    </div>
+    <div class="note">检测到本机/局域网 Ollama 后会自动填入；没有模型时询问是否下载默认 qwen2.5:3b。</div>
+  </section>
+  <div id="status">就绪</div>
+</main>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const status = (text) => { $('status').textContent = text; };
+const api = async (path, options = {}) => {
+  const response = await fetch(path, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `HTTP ${response.status}`);
+  return payload.data ?? payload;
+};
+document.querySelectorAll('.tab').forEach((tab) => tab.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach((item) => item.classList.toggle('active', item === tab));
+  $('remote').classList.toggle('hidden', tab.dataset.tab !== 'remote');
+  $('local').classList.toggle('hidden', tab.dataset.tab !== 'local');
+}));
+$('save-remote').addEventListener('click', async () => {
+  const baseUrl = $('remote-base').value.trim();
+  const model = $('remote-model').value.trim();
+  const apiKey = $('remote-key').value.trim();
+  if (!baseUrl || !model || !apiKey) return status('请填写地址、模型和 API Key');
+  status('正在保存…');
+  try {
+    await api('/api/v1/settings/credentials/ai_provider/openai_compatible', {
+      method: 'PUT',
+      body: JSON.stringify({ label: '远程模型', secret: { apiKey }, config: { baseUrl, model } }),
+    });
+    await api('/api/v1/settings', { method: 'PATCH', body: JSON.stringify({ ai: { provider: 'openai_compatible', baseUrl, model } }) });
+    status('已保存，正在测试…');
+    const result = await api('/api/v1/assistant/chat', { method: 'POST', body: JSON.stringify({ messages: [{ role: 'user', content: '只回复：模型连接成功' }] }) });
+    status(`连接成功：${result.model || model}`);
+    setTimeout(() => { location.href = '/'; }, 800);
+  } catch (error) { status(`失败：${error.message}`); }
+});
+$('save-local').addEventListener('click', async () => {
+  const baseUrl = $('local-base').value.trim();
+  const model = $('local-model').value.trim();
+  if (!baseUrl || !model) return status('请填写 Ollama 地址和模型名');
+  status('正在保存…');
+  try {
+    await api('/api/v1/model-setup/use', { method: 'POST', body: JSON.stringify({ baseUrl, model }) });
+    const result = await api('/api/v1/assistant/chat', { method: 'POST', body: JSON.stringify({ messages: [{ role: 'user', content: '只回复：本地模型连接成功' }] }) });
+    status(`连接成功：${result.model || model}`);
+    setTimeout(() => { location.href = '/'; }, 800);
+  } catch (error) { status(`失败：${error.message}`); }
+});
+$('detect-install').addEventListener('click', async () => {
+  status('正在检测本机与局域网 Ollama…');
+  try {
+    const local = await api('/api/v1/model-setup/status');
+    if (local.installed) {
+      $('local-base').value = local.endpoint;
+      if (local.models?.length) $('local-model').value = local.hasDefault ? local.defaultModel : local.models[0].name;
+      status(local.ready ? `检测完成：${local.models.map((item) => item.name).join('、')}` : `已检测到 Ollama，但模型不完整。已有：${local.models.map((item) => item.name).join('、') || '无'}`);
+      return;
+    }
+    const lan = await api('/api/v1/model-setup/lan');
+    if (lan.hosts?.length) {
+      const host = lan.hosts[0];
+      $('local-base').value = host.endpoint;
+      if (host.models?.length) $('local-model').value = host.models.find((item) => item.name === 'qwen2.5:3b')?.name || host.models[0].name;
+      status(`发现局域网模型：${host.endpoint}`);
+      return;
+    }
+    status('未检测到 Ollama。请先安装 Ollama，或切换到远程 API。');
+  } catch (error) { status(`检测失败：${error.message}`); }
+});
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@
  * Every factor carries its weight, its 0..1 score and a human-readable reason so
  * the UI can explain the number. Exclusions force the score to 0 / grade D.
  */
-import { all, get } from '../core/db.mjs';
+import { all, get, run } from '../core/db.mjs';
 import { validationError, notFound } from '../core/errors.mjs';
 import { id } from '../core/ids.mjs';
 import { nowIso } from '../core/time.mjs';
@@ -44,6 +44,275 @@ const BUYING_KEYWORDS = [
   'distribuidor', 'dystrybutor', 'aftermarket', 'oem', 'rfq', 'quote', 'quotation', 'catalog', 'katalog',
 ];
 
+const DIRECT_BUYER_TYPES = new Set([
+  'distributor', 'wholesaler', 'wholesale', 'importer', 'import', 'trader', 'trading', 'trading_company',
+  'reseller', 'dealer', 'retailer',
+]);
+
+const PLATFORM_TYPES = new Set([
+  'platform', 'marketplace', 'marketplace_operator', 'directory', 'aggregator', 'b2b_marketplace',
+]);
+
+const PLATFORM_DESCRIPTION_PATTERNS = [
+  /\bb2b\s+(?:online\s+)?(?:groß|gross)?handels(?:marktplatz|plattform)\b/i,
+  /\b(?:online\s+)?(?:groß|gross)?handelsmarktplatz\b/i,
+  /\bb2b\s+(?:online\s+)?(?:handels)?marktplatz\b/i,
+  /\bb2b\s+(?:online\s+)?handelsplattform\b/i,
+  /\bb2b\s+(?:online\s+)?marketplace\b/i,
+  /\b(?:supplier|company|business)\s+directory\b/i,
+  /\b(?:firmen|lieferanten|unternehmens)verzeichnis\b/i,
+  /\b(?:gelbe\s+seiten|yellow\s+pages)\b/i,
+  /\b(?:marketplace|platform)\s+operator\b/i,
+];
+
+const DIRECT_BUYER_DESCRIPTION_PATTERNS = [
+  /\bimporter\b/i,
+  /\bimport(?:s|ing|ed)?\b/i,
+  /\bdistributor\b/i,
+  /\bwholesaler\b/i,
+  /\bwholesale\b/i,
+  /\bgroßhandel\b/i,
+  /\bgrosshandel\b/i,
+  /\bgroßhändler\b/i,
+  /\bgrosshaendler\b/i,
+  /\btrading(?:\s+company)?\b/i,
+  /\btrader\b/i,
+  /\breseller\b/i,
+  /\bdealer\b/i,
+  /\bretailer\b/i,
+];
+
+/**
+ * Infer the company's operating role from fields already stored on the record.
+ * This is intentionally conservative and evidence-labelled:
+ * - platform/marketplace phrases take precedence when a platform also mentions
+ *   wholesale/catalog keywords;
+ * - direct-buyer role requires an actual buyer/wholesale phrase, not just an
+ *   industry word;
+ * - no inference is made from a search title alone.
+ */
+export function inferCompanyIdentity(company = {}) {
+  const explicitType = String(company.companyType || '').trim().toLowerCase().replace(/\s+/g, '_');
+  const text = [company.name, company.description, company.industry, company.companyType]
+    .filter(Boolean)
+    .join(' ');
+  const evidence = [];
+  if (explicitType) evidence.push(`company_type:${explicitType}`);
+  const platformHit = PLATFORM_DESCRIPTION_PATTERNS.find((pattern) => pattern.test(text));
+  if (PLATFORM_TYPES.has(explicitType) || platformHit) {
+    return {
+      role: 'platform',
+      companyType: explicitType || 'platform',
+      confidence: 'explicit',
+      evidence: platformHit ? [...evidence, `description:${platformHit.source}`] : evidence,
+    };
+  }
+  if (DIRECT_BUYER_TYPES.has(explicitType)) {
+    return { role: 'direct_buyer', companyType: explicitType, confidence: 'explicit', evidence };
+  }
+  const directHit = DIRECT_BUYER_DESCRIPTION_PATTERNS.find((pattern) => pattern.test(text));
+  if (directHit) {
+    let inferredType = 'direct_buyer';
+    if (/\bimporter\b|\bimport(?:s|ing|ed)?\b/i.test(text)) inferredType = 'importer';
+    else if (/\bdistributor\b/i.test(text)) inferredType = 'distributor';
+    else if (/\bwholesaler\b|\bwholesale\b|\bgroßhandel\b|\bgrosshandel\b|\bgroßhändler\b|\bgrosshaendler\b/i.test(text)) inferredType = 'wholesaler';
+    else if (/\btrader\b|\btrading(?:\s+company)?\b/i.test(text)) inferredType = 'trader';
+    return {
+      role: 'direct_buyer',
+      companyType: inferredType,
+      confidence: 'inferred',
+      evidence: [...evidence, `description:${directHit.source}`],
+    };
+  }
+  if (explicitType) {
+    return { role: 'other', companyType: explicitType, confidence: 'explicit', evidence };
+  }
+  return { role: 'unknown', companyType: null, confidence: 'unknown', evidence };
+}
+
+export const QUALIFICATION_VALUES = ['qualified', 'rejected', 'insufficient_evidence'];
+
+const REPORT_DESCRIPTION_PATTERNS = [
+  /\bmarket\s+report\b/i,
+  /\bafter[-\s]?sales\s+intelligence\b/i,
+  /\bwebshops?\b/i,
+];
+
+const RETAIL_ONLY_PATTERNS = [
+  /\bb2c\b/i,
+  /\bendkunde(?:n)?\b/i,
+  /\beinzelhandel\b/i,
+  /\bonline[-\s]?shop\b/i,
+  /\bwebshop\b/i,
+];
+
+const MANUFACTURER_BRAND_PATTERNS = [
+  /\bhersteller\b/i,
+  /\bmanufacturer\b/i,
+  /\bmarkenhersteller\b/i,
+  /\bown\s+brand\b/i,
+  /\beigene\s+marke\b/i,
+];
+
+function qualificationCountries(icp) {
+  const raw = icp?.targetCountries ?? icp?.target_countries_json ?? [];
+  if (Array.isArray(raw)) return raw.map((country) => String(country).toUpperCase());
+  try {
+    return JSON.parse(raw).map((country) => String(country).toUpperCase());
+  } catch {
+    return [];
+  }
+}
+
+function qualificationSourceText(sources = []) {
+  const chunks = [];
+  for (const source of sources) {
+    chunks.push(source.source_type, source.source_name, source.source_url);
+    try {
+      const payload = typeof source.payload_json === 'string' ? JSON.parse(source.payload_json) : source.payload_json || {};
+      chunks.push(payload.title, payload.description, payload.text, payload.snippet);
+    } catch {
+      // Malformed source payloads are not evidence.
+    }
+  }
+  return chunks.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function isBusinessPageUrl(source) {
+  const url = String(source?.source_url || '').trim();
+  if (!url) return false;
+  try {
+    const path = new URL(url).pathname.replace(/\/+$/, '');
+    return path !== '';
+  } catch {
+    return false;
+  }
+}
+
+function officialSourceTexts(sources = []) {
+  const chunks = [];
+  for (const source of sources) {
+    const type = String(source.source_type || '').toLowerCase();
+    if (!['crawl', 'browser', 'web'].includes(type) || !isBusinessPageUrl(source)) continue;
+    try {
+      const payload = typeof source.payload_json === 'string' ? JSON.parse(source.payload_json) : source.payload_json || {};
+      chunks.push(payload.title, payload.description, payload.text, payload.snippet);
+    } catch {
+      // Malformed source payloads are not evidence.
+    }
+  }
+  return chunks.filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function hasOfficialEvidence(sources) {
+  return (sources || []).some(
+    (source) => ['crawl', 'browser', 'web'].includes(String(source.source_type || '').toLowerCase()) && isBusinessPageUrl(source),
+  );
+}
+
+/**
+ * Evidence-based ICP classification. It deliberately does not use lead score:
+ * a score is a ranking signal, not proof that the company is a target buyer.
+ * If official/company evidence is too thin, the result must be
+ * insufficient_evidence, never a guessed qualified/rejected.
+ */
+export function classifyCompanyQualification({ company = {}, sources = [], icp = null } = {}) {
+  const evidence = [];
+  const text = [company.name, company.description, company.industry, company.companyType]
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ');
+  const sourceText = qualificationSourceText(sources);
+  const officialText = officialSourceTexts(sources);
+  const combined = `${text} ${sourceText}`.trim();
+  const identity = inferCompanyIdentity(company);
+  const countries = qualificationCountries(icp);
+  const country = String(company.country || '').toUpperCase();
+  const official = hasOfficialEvidence(sources);
+
+  if (identity.role === 'platform') {
+    evidence.push(...identity.evidence.slice(0, 2));
+    return { qualification: 'rejected', reason: 'platform_or_directory', evidence, role: 'platform' };
+  }
+  if (REPORT_DESCRIPTION_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return { qualification: 'rejected', reason: 'research_report_or_directory', evidence: ['description:report_or_webshop_directory'], role: 'other' };
+  }
+  if (countries.length && country && !countries.includes(country)) {
+    return { qualification: 'rejected', reason: 'country_mismatch', evidence: [`country:${country}`, `icp:${countries.join(',')}`], role: identity.role };
+  }
+
+  const isDirect = identity.role === 'direct_buyer';
+  const isRetailOnly = RETAIL_ONLY_PATTERNS.some((pattern) => pattern.test(combined));
+  const hasWholesaleEvidence = /\b(?:b2b|wholesale|wholesaler|großhandel|grosshandel|großhändler|grosshaendler|distributor|importer|import)\b/i.test(text);
+  const isManufacturerOrBrand = MANUFACTURER_BRAND_PATTERNS.some((pattern) => pattern.test(combined));
+
+  if (isRetailOnly && !hasWholesaleEvidence) {
+    return { qualification: 'rejected', reason: 'retail_only', evidence: ['description:retail_only'], role: 'retailer' };
+  }
+  if (isDirect) {
+    evidence.push(...identity.evidence.slice(0, 2));
+    const officialDirectEvidence = /\b(?:b2b|wholesale|wholesaler|großhandel|grosshandel|großhändler|grosshaendler|distributor|importer|import)\b/i.test(officialText);
+    if (!official) {
+      return { qualification: 'insufficient_evidence', reason: 'official_business_page_missing', evidence, role: identity.companyType || 'direct_buyer' };
+    }
+    if (!officialDirectEvidence) {
+      return { qualification: 'insufficient_evidence', reason: 'official_business_role_unverified', evidence, role: identity.companyType || 'direct_buyer' };
+    }
+    return { qualification: 'qualified', reason: 'verified_direct_buyer', evidence, role: identity.companyType || 'direct_buyer' };
+  }
+  if (isManufacturerOrBrand && !isRetailOnly) {
+    return { qualification: 'rejected', reason: 'manufacturer_or_brand', evidence: ['description:manufacturer_or_brand'], role: 'manufacturer_or_brand' };
+  }
+  if (isRetailOnly) {
+    return { qualification: 'rejected', reason: 'retail_only', evidence: ['description:retail_only'], role: 'retailer' };
+  }
+  if (!official) {
+    return { qualification: 'insufficient_evidence', reason: 'official_business_page_missing', evidence, role: identity.role };
+  }
+  return { qualification: 'insufficient_evidence', reason: 'business_role_not_verified', evidence, role: identity.role };
+}
+
+export function readQualificationFromTags(tags = []) {
+  const tag = (Array.isArray(tags) ? tags : []).find((item) => String(item).startsWith('qualification:'));
+  if (!tag) return null;
+  const value = String(tag).slice('qualification:'.length);
+  return QUALIFICATION_VALUES.includes(value) ? value : null;
+}
+
+export function readQualificationReasonFromTags(tags = []) {
+  const tag = (Array.isArray(tags) ? tags : []).find((item) => String(item).startsWith('qualification_reason:'));
+  return tag ? String(tag).slice('qualification_reason:'.length) : null;
+}
+
+export function withQualificationTags(tags = [], result = {}) {
+  const cleaned = (Array.isArray(tags) ? tags : []).filter(
+    (tag) => !String(tag).startsWith('qualification:') && !String(tag).startsWith('qualification_reason:'),
+  );
+  if (!QUALIFICATION_VALUES.includes(result.qualification)) return cleaned;
+  const reason = String(result.reason || 'not_verified').replace(/[^a-z0-9_]/gi, '').slice(0, 30) || 'not_verified';
+  return [...cleaned, `qualification:${result.qualification}`, `qualification_reason:${reason}`].slice(0, 30);
+}
+
+/**
+ * Count a caller-supplied, already-deduplicated set of independent companies.
+ * Only `qualified` is eligible for the target-customer quota; rejected and
+ * insufficient_evidence never fill a qualified slot.
+ */
+export function summarizeQualification(companies = []) {
+  const summary = { total: 0, qualified: 0, rejected: 0, insufficientEvidence: 0, unclassified: 0, verified: 0, qualifiedRate: 0 };
+  for (const company of Array.isArray(companies) ? companies : []) {
+    summary.total += 1;
+    const value = company?.qualification;
+    if (value === 'qualified') summary.qualified += 1;
+    else if (value === 'rejected') summary.rejected += 1;
+    else if (value === 'insufficient_evidence') summary.insufficientEvidence += 1;
+    else summary.unclassified += 1;
+  }
+  summary.verified = summary.qualified + summary.rejected + summary.insufficientEvidence;
+  summary.qualifiedRate = summary.verified ? Math.round((summary.qualified / summary.verified) * 1000) / 10 : 0;
+  return summary;
+}
+
 export function gradeForScore(score) {
   if (score >= 80) return 'A';
   if (score >= 65) return 'B';
@@ -69,15 +338,29 @@ function completenessRatio(company) {
   return fields.filter(Boolean).length / fields.length;
 }
 
-function evaluateCompanyType(company, icp) {
-  if (!icp || !Array.isArray(icp.targetCompanyTypes) || !icp.targetCompanyTypes.length) {
-    return { score: 0.5, reason: '未设置 ICP 目标企业类型，按中性处理' };
+function evaluateCompanyType(company, icp, identity) {
+  if (identity.role === 'platform') {
+    return {
+      score: 0.05,
+      reason: '企业身份为 B2B 市场平台/供应商目录运营方，不是直接采购客户',
+      evidence: identity.evidence,
+    };
   }
-  const companyType = String(company.companyType || '').toLowerCase();
+  const effectiveType = identity.companyType || company.companyType;
+  if (!icp || !Array.isArray(icp.targetCompanyTypes) || !icp.targetCompanyTypes.length) {
+    return { score: 0.5, reason: '未设置 ICP 目标企业类型，按中性处理', evidence: identity.evidence };
+  }
+  const companyType = String(effectiveType || '').toLowerCase();
   const matched = icp.targetCompanyTypes.some((target) => companyType && companyType.includes(String(target).toLowerCase()));
-  if (matched) return { score: 1, reason: `企业类型（${company.companyType}）与 ICP 目标一致` };
-  if (!companyType) return { score: 0.35, reason: '企业类型未知，无法判断是否匹配 ICP' };
-  return { score: 0.15, reason: `企业类型（${company.companyType}）不在 ICP 目标类型中` };
+  if (matched) {
+    return {
+      score: 1,
+      reason: `企业类型（${effectiveType}${identity.confidence === 'inferred' ? '，由公开描述推断' : ''}）与 ICP 目标一致`,
+      evidence: identity.evidence,
+    };
+  }
+  if (!companyType) return { score: 0.35, reason: '企业类型未知，无法判断是否匹配 ICP', evidence: identity.evidence };
+  return { score: 0.15, reason: `企业类型（${effectiveType}）不在 ICP 目标类型中`, evidence: identity.evidence };
 }
 
 function evaluateRegion(company, icp) {
@@ -97,7 +380,13 @@ function evaluateRegion(company, icp) {
   return { score: 0.1, reason: `企业所在国家（${country}）不在 ICP 目标范围内` };
 }
 
-function evaluateBuyingScenario(company, product) {
+function evaluateBuyingScenario(company, product, identity = null) {
+  if (identity?.role === 'platform') {
+    return {
+      score: 0.05,
+      reason: '企业是平台/供应商目录运营方；目录中的批发、商品和 Katalog 关键词不代表其自身采购活动',
+    };
+  }
   const text = [company.name, company.industry, company.description, company.companyType, company.region]
     .filter(Boolean)
     .join(' ')
@@ -109,6 +398,9 @@ function evaluateBuyingScenario(company, product) {
     if (hits.length) pieces.push(`采购/分销关键词：${[...new Set(hits)].slice(0, 4).join('、')}`);
     if (applications.length) pieces.push(`产品应用场景：${applications.slice(0, 3).join('、')}`);
     return { score: clamp01(0.55 + hits.length * 0.1 + applications.length * 0.1), reason: pieces.join('；') };
+  }
+  if (identity?.role === 'direct_buyer') {
+    return { score: 0.55, reason: `公开证据表明企业为 ${identity.companyType}，具备采购动机` };
   }
   if (company.companyType) {
     return { score: 0.4, reason: `企业类型为 ${company.companyType}，但未发现明确采购描述` };
@@ -189,7 +481,8 @@ function collectExclusions({ company, product, icp, contacts, signals }) {
  */
 export function computeScore({ company, product, icp = null, contacts = [], signals = {} }) {
   const factors = [];
-  const productMatch = matchProductRules(product, company);
+  const identity = inferCompanyIdentity(company);
+  const productMatch = matchProductRules(product, company, { identity });
   factors.push({
     key: 'product_match',
     label: '产品匹配度',
@@ -198,12 +491,19 @@ export function computeScore({ company, product, icp = null, contacts = [], sign
     reason: productMatch.reasons.join('；'),
     evidence: productMatch.evidence,
   });
-  const companyType = evaluateCompanyType(company, icp);
-  factors.push({ key: 'company_type', label: '企业类型匹配', weight: 0.1, score: clamp01(companyType.score), reason: companyType.reason });
+  const companyType = evaluateCompanyType(company, icp, identity);
+  factors.push({
+    key: 'company_type',
+    label: '企业类型匹配',
+    weight: 0.1,
+    score: clamp01(companyType.score),
+    reason: companyType.reason,
+    evidence: companyType.evidence,
+  });
   const region = evaluateRegion(company, icp);
   factors.push({ key: 'region', label: '目标地区匹配', weight: 0.15, score: clamp01(region.score), reason: region.reason });
-  const buying = evaluateBuyingScenario(company, product);
-  factors.push({ key: 'buying_scenario', label: '采购场景', weight: 0.15, score: clamp01(buying.score), reason: buying.reason });
+  const buying = evaluateBuyingScenario(company, product, identity);
+  factors.push({ key: 'buying_scenario', label: '采购场景', weight: 0.15, score: clamp01(buying.score), reason: buying.reason, evidence: identity.evidence });
   const dataConfidence = evaluateDataConfidence(company);
   factors.push({ key: 'data_confidence', label: '信息可信度', weight: 0.1, score: clamp01(dataConfidence.score), reason: dataConfidence.reason });
   const contactConfidence = evaluateContactConfidence(contacts);
@@ -289,7 +589,17 @@ export async function scoreCompany({ workspaceId, companyId, productId, actorId 
   const icp = resolveIcp(workspaceId, company, productId);
   const signals = loadSignals(workspaceId, company, contacts);
   const result = computeScore({ company, product, icp, contacts, signals });
+  const sources = all(
+    'SELECT source_type, source_name, source_url, payload_json FROM company_sources WHERE workspace_id = ? AND company_id = ? ORDER BY retrieved_at DESC LIMIT 40',
+    [workspaceId, companyId],
+  );
+  const qualificationResult = classifyCompanyQualification({ company, sources, icp });
+  const qualificationTags = withQualificationTags(company.tags, qualificationResult);
   const scoredAt = nowIso();
+  companiesRepo.updateCompany(workspaceId, companyId, {
+    tags_json: JSON.stringify(qualificationTags),
+    updated_at: scoredAt,
+  });
   scoringRepo.upsertLeadScore({
     id: id('scr'),
     workspace_id: workspaceId,
@@ -321,7 +631,7 @@ export async function scoreCompany({ workspaceId, companyId, productId, actorId 
     action: 'lead.score',
     entityType: 'company',
     entityId: companyId,
-    after: { productId, score: result.score, grade: result.grade, exclusions: result.exclusions.map((item) => item.code) },
+    after: { productId, score: result.score, grade: result.grade, qualification: qualificationResult.qualification, exclusions: result.exclusions.map((item) => item.code) },
     ip,
     userAgent,
     requestId,
@@ -334,6 +644,8 @@ export async function scoreCompany({ workspaceId, companyId, productId, actorId 
     factors: result.factors,
     exclusions: result.exclusions,
     explanation: result.explanation,
+    qualification: qualificationResult.qualification,
+    qualificationReason: qualificationResult.reason,
     modelVersion: SCORE_MODEL_VERSION,
     scoredAt,
   };

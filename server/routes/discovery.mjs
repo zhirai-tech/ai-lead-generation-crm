@@ -31,7 +31,7 @@ export function mount(router) {
       // (keywords/countries/maxResults/icpId) and a nested `query` object.
       const input = {
         ...body,
-        provider: body.provider ? asString(body.provider, { max: 40 }) : 'simulation',
+        provider: body.provider ? asString(body.provider, { max: 40 }) : 'osm',
         industry: body.industry ? asString(body.industry, { max: 120 }) : undefined,
         region: body.region ? asString(body.region, { max: 120 }) : undefined,
       };
@@ -43,6 +43,18 @@ export function mount(router) {
   router.get('/api/v1/discovery/providers', async (ctx) => ({ items: discoveryService.listDiscoveryProviders(ctx.workspace.id) }), READ);
 
   router.get('/api/v1/discovery/runs/:id', async (ctx) => discoveryService.getDiscoveryRunDetail(ctx.workspace.id, ctx.params.id), READ);
+
+  router.get(
+    '/api/v1/discovery/runs/:id/candidates',
+    async (ctx) => discoveryService.listDiscoveryCandidates(ctx.workspace.id, ctx.params.id, { limit: 1000, offset: 0 }),
+    READ,
+  );
+
+  router.get(
+    '/api/v1/discovery/runs/:id/progress',
+    async (ctx) => ({ progress: discoveryService.getDiscoveryProgress(ctx.workspace.id, ctx.params.id) }),
+    READ,
+  );
 
   router.post(
     '/api/v1/discovery/runs/:id/cancel',

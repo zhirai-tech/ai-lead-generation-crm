@@ -156,6 +156,33 @@ export function extractEmailsFromHtml(html) {
     if (DISPOSABLE_DOMAINS.has(domain)) return;
     emails.add(normalized);
   };
+
+  // Cloudflare Email Protection: data-cfemail="hex" -> XOR decode.
+  const cfRegex = /data-cfemail\s*=\s*["']([0-9a-f]+)["']/gi;
+  let cf = cfRegex.exec(html);
+  while (cf) {
+    try {
+      const encoded = cf[1];
+      const key = parseInt(encoded.slice(0, 2), 16);
+      let decoded = '';
+      for (let index = 2; index < encoded.length; index += 2) {
+        decoded += String.fromCharCode(parseInt(encoded.slice(index, index + 2), 16) ^ key);
+      }
+      collect(decoded);
+    } catch {
+      // ignore malformed protection payloads
+    }
+    cf = cfRegex.exec(html);
+  }
+
+  // Clickable / icon-based contact widgets often keep the address in data attributes.
+  const dataRegex = /(?:data-email|data-mail|data-mailto|data-contact-email)\s*=\s*["']([^"']+)["']/gi;
+  let dataMatch = dataRegex.exec(html);
+  while (dataMatch) {
+    collect(dataMatch[1].replace(/^mailto:/i, ''));
+    dataMatch = dataRegex.exec(html);
+  }
+
   const mailtoRegex = /href\s*=\s*["']mailto:([^"'?]+)(?:\?[^"']*)?["']/gi;
   let match = mailtoRegex.exec(html);
   while (match) {
@@ -169,17 +196,33 @@ export function extractEmailsFromHtml(html) {
     collect(match[0]);
     match = emailRegex.exec(text);
   }
+  // Common anti-spam forms: name [at] domain [dot] de / name(at)domain.de
+  const obfuscated = /([a-z0-9._%+-]+)\s*(?:\[at\]|\(at\)|&#64;| at )\s*([a-z0-9.-]+)\s*(?:\[dot\]|\(dot\)| dot )\s*([a-z]{2,})/gi;
+  let obf = obfuscated.exec(text);
+  while (obf) {
+    collect(`${obf[1]}@${obf[2]}.${obf[3]}`);
+    obf = obfuscated.exec(text);
+  }
   return [...emails].slice(0, 30);
 }
 
 export function extractPhonesFromHtml(html) {
   const phones = new Set();
+  const add = (raw) => {
+    const phone = normalizePhone(decodeEntities(String(raw || '')));
+    if (phone.replace(/\D/g, '').length >= 6) phones.add(phone);
+  };
   const telRegex = /href\s*=\s*["']tel:([^"']+)["']/gi;
   let match = telRegex.exec(html);
   while (match) {
-    const phone = normalizePhone(decodeEntities(match[1]));
-    if (phone.replace(/\D/g, '').length >= 6) phones.add(phone);
+    add(match[1]);
     match = telRegex.exec(html);
+  }
+  const attrs = /(?:data-phone|data-telephone|itemprop\s*=\s*["']telephone["'][^>]*content)\s*=\s*["']([^"']+)["']/gi;
+  let attr = attrs.exec(html);
+  while (attr) {
+    add(attr[1]);
+    attr = attrs.exec(html);
   }
   return [...phones].slice(0, 10);
 }
@@ -691,6 +734,79 @@ export async function enrichCompany({
 
   let inferred = 0;
   let inferenceError = null;
+  let browserResult = null;
+  const browserNeeded = Boolean(company.website || company.domain)
+    && (!crawlResult || Number(crawlResult.emailsFound || 0) === 0 || !Array.isArray(crawlResult.phonesFound) || crawlResult.phonesFound.length === 0);
+  if (browserNeeded) {
+    try {
+      const { browserExtractContacts } = await import('./browser-contact.mjs');
+      const extracted = await browserExtractContacts(company.website || `https://${company.domain}`, { timeoutMs: 30000, maxPages: 8 });
+      browserResult = extracted;
+      let browserContacts = 0;
+      for (const email of extracted.emails || []) {
+        const existing = contactsRepo.findContactByEmail(workspaceId, email);
+        if (existing) continue;
+        try {
+          createContact(
+            workspaceId,
+            {
+              companyId,
+              email,
+              emailType: deriveEmailType(email),
+              emailStatus: 'unverified',
+              roleCategory: deriveEmailType(email) === 'role' ? 'gatekeeper' : 'unknown',
+              confidence: 'low',
+              source: {
+                type: 'browser',
+                url: extracted.pages?.[0]?.url || company.website || null,
+                method: 'playwright',
+                confidence: 60,
+                payload: { extractedFrom: 'rendered website', unverified: true },
+              },
+            },
+            { actorId, sourceMethod: 'browser' },
+          );
+          browserContacts += 1;
+        } catch {
+          // duplicate/invalid address: skip
+        }
+      }
+      const fresh = companiesRepo.findCompany(workspaceId, companyId);
+      if (fresh && !fresh.phone && extracted.phones?.length) {
+        companiesRepo.updateCompany(workspaceId, companyId, {
+          phone: extracted.phones[0],
+          updated_at: nowIso(),
+        });
+      }
+      if (extracted.pages?.length) {
+        addCompanySource(workspaceId, companyId, {
+          id: id('src'),
+          sourceType: 'browser',
+          sourceName: '浏览器抓取',
+          sourceUrl: extracted.pages[0].url,
+          confidence: 65,
+          payload: {
+            emails: extracted.emails || [],
+            phones: extracted.phones || [],
+            socials: extracted.socials || [],
+            pages: extracted.pages.map((page) => page.url),
+            error: extracted.error || null,
+          },
+        });
+      }
+      browserResult = {
+        contactsCreated: browserContacts,
+        emails: extracted.emails || [],
+        phones: extracted.phones || [],
+        socials: extracted.socials || [],
+        pages: (extracted.pages || []).map((page) => page.url),
+        error: extracted.error || null,
+      };
+    } catch (error) {
+      browserResult = { contactsCreated: 0, emails: [], phones: [], socials: [], pages: [], error: error.message };
+    }
+  }
+
   if (company.domain) {
     const candidates = contactsRepo.listContactsWithoutEmail(workspaceId, companyId, { limit: 3 });
     for (const contact of candidates) {
@@ -718,6 +834,8 @@ export async function enrichCompany({
       crawlPages: crawlResult?.fetched || 0,
       contactsCreated: crawlResult?.contactsCreated || 0,
       emailsFound: crawlResult?.emailsFound || 0,
+      browserContacts: browserResult?.contactsCreated || 0,
+      browserEmails: browserResult?.emails?.length || 0,
       inferred,
       crawlError,
     },
@@ -727,13 +845,14 @@ export async function enrichCompany({
   });
 
   return {
-    updated: Boolean(crawlResult?.updated),
-    contactsCreated: crawlResult?.contactsCreated || 0,
-    emailsFound: (crawlResult?.emailsFound || 0) + inferred,
+    updated: Boolean(crawlResult?.updated) || Boolean(browserResult?.contactsCreated),
+    contactsCreated: (crawlResult?.contactsCreated || 0) + (browserResult?.contactsCreated || 0),
+    emailsFound: (crawlResult?.emailsFound || 0) + (browserResult?.emails?.length || 0) + inferred,
     inferredEmails: inferred,
     pagesFetched: crawlResult?.fetched || 0,
     updatedFields: crawlResult?.updatedFields || [],
-    emails: crawlResult?.pages?.flatMap((page) => page.emails).slice(0, 20) || [],
+    emails: [...(crawlResult?.pages?.flatMap((page) => page.emails) || []), ...(browserResult?.emails || [])].slice(0, 30),
+    browser: browserResult,
     error: crawlError,
     inferenceError,
   };

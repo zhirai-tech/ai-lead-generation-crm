@@ -398,6 +398,16 @@ function buildUnsubscribe({ workspaceId, contact, company, config = null }) {
 }
 
 // --------------------------------------------------------------- attachments
+/** Signed public link used to render product photos inside the HTML body. */
+function imagePublicUrl(workspaceId, productId, fileId) {
+  const token = signToken(
+    getSecret(),
+    { t: 'pfile', w: workspaceId, p: productId, f: fileId },
+    { expiresInDays: 180 },
+  );
+  return `/api/v1/public/product-files/${token}`;
+}
+
 /** Only safe, product-document style attachment types are ever sent. */
 const ATTACHMENT_ALLOWED_MIME = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp']);
 
@@ -441,7 +451,7 @@ export function loadDraftAttachments({ workspaceId, draft, config = null, logger
       return;
     }
     const row = get(
-      'SELECT id, filename, mime_type, storage_path FROM product_files WHERE id = ? AND workspace_id = ?',
+      'SELECT id, product_id, filename, mime_type, storage_path FROM product_files WHERE id = ? AND workspace_id = ?',
       [productFileId, workspaceId],
     );
     if (!row) {
@@ -495,13 +505,16 @@ export function loadDraftAttachments({ workspaceId, draft, config = null, logger
     }
     totalBytes += content.length;
     const filename = row.filename || item.filename || `attachment-${index + 1}.pdf`;
+    const isImage = mimeType.startsWith('image/');
     result.contents.push({ filename, mimeType, content });
     result.snapshot.push({
       productFileId,
       filename,
       mimeType,
       sizeBytes: content.length,
-      publicUrl: typeof item.publicUrl === 'string' && item.publicUrl ? item.publicUrl : null,
+      publicUrl: isImage
+        ? imagePublicUrl(workspaceId, row.product_id, row.id)
+        : (typeof item.publicUrl === 'string' && item.publicUrl ? item.publicUrl : null),
     });
   });
   return result;
@@ -534,6 +547,42 @@ export function buildCatalogueLinkLines({ draftBodyText = '', snapshot = [], con
     lines.push(`Product catalogue (PDF): ${absolute}`);
   }
   return lines;
+}
+
+/** Render the rich HTML version: product photos + CTA buttons instead of raw URLs. */
+export function buildRichEmailHtml({
+  text = '',
+  unsubscribeUrl = '',
+  catalogueUrls = [],
+  imageCids = [],
+} = {}) {
+  const base = 'display:inline-block;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600;font-size:14px;margin:6px 8px 6px 0;';
+  const primary = `${base}background:#0ea5e9;color:#ffffff;`;
+  const muted = `${base}background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;`;
+  let html = textToHtml(text).replace(/Product catalogue \(PDF\):\s*/gi, '');
+  for (const url of catalogueUrls) {
+    if (!url) continue;
+    html = html.replace(
+      escapeHtml(url),
+      `<a href="${escapeHtml(url)}" style="${primary}">查看产品目录 / View catalogue</a>`,
+    );
+  }
+  html = html.replace(/Unsubscribe \/ 退订:\s*/gi, '');
+  if (unsubscribeUrl) {
+    html = html.replace(
+      escapeHtml(unsubscribeUrl),
+      `<a href="${escapeHtml(unsubscribeUrl)}" style="${muted}">取消订阅 / Unsubscribe</a>`,
+    );
+  }
+  if (imageCids.length) {
+    const gallery = `<div style="margin:18px 0 6px;line-height:0">${imageCids
+      .slice(0, 3)
+      .map((cid) => `<img src="cid:${escapeHtml(cid)}" alt="Product photo" style="max-width:100%;width:auto;max-height:280px;border-radius:8px;margin:6px 0">`)
+      .join('')}</div>`;
+    const marker = html.indexOf('取消订阅 / Unsubscribe');
+    html = marker >= 0 ? `${html.slice(0, marker)}${gallery}${html.slice(marker)}` : `${html}${gallery}`;
+  }
+  return html;
 }
 
 function updateDraftFailed(workspaceId, draftId, error) {
@@ -662,7 +711,23 @@ export async function sendDraft({
     senderCompany: context.settings?.compliance?.senderCompanyName || '',
     senderAddress: context.settings?.compliance?.senderAddress || '',
   });
-  const html = textToHtml(fullText).replace(escapeHtml(unsubscribe.url), `<a href="${escapeHtml(unsubscribe.url)}">${escapeHtml(unsubscribe.url)}</a>`);
+  const catalogueUrls = attachments.snapshot
+    .filter((item) => item.mimeType === 'application/pdf' && item.publicUrl)
+    .map((item) => absolutePublicUrl(item.publicUrl, effectiveConfig))
+    .filter(Boolean);
+  // Product photos are embedded as CID inline images (not file attachments), so
+  // they render directly in the email without a remote URL or "show images" step.
+  const inlineImages = attachments.contents
+    .filter((item) => String(item.mimeType || '').startsWith('image/'))
+    .slice(0, 3)
+    .map((item, index) => ({ ...item, cid: `product-image-${index + 1}` }));
+  const fileAttachments = attachments.contents.filter((item) => !String(item.mimeType || '').startsWith('image/'));
+  const html = buildRichEmailHtml({
+    text: fullText,
+    unsubscribeUrl: unsubscribe.url,
+    catalogueUrls,
+    imageCids: inlineImages.map((item) => item.cid),
+  });
 
   let built;
   try {
@@ -674,7 +739,8 @@ export async function sendDraft({
       html,
       date: new Date(nowMs),
       unsubscribe: { url: unsubscribe.url, mailto: unsubscribe.mailto },
-      attachments: attachments.contents,
+      attachments: fileAttachments,
+      inlineImages,
       headers: {
         'X-ZHIRAI-Draft': draft.id,
         'X-Mailer': 'ZHIRAI Outreach',

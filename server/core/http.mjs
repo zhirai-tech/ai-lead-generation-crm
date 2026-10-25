@@ -33,16 +33,16 @@ const MIME = {
 };
 
 const PUBLIC_STATIC_ROOTS = new Set(['src', 'assets', 'admin']);
-const PUBLIC_STATIC_FILES = new Set(['index.html', 'favicon.ico', 'robots.txt', 'manifest.webmanifest']);
+const PUBLIC_STATIC_FILES = new Set(['index.html', 'setup.html', 'favicon.ico', 'robots.txt', 'manifest.webmanifest']);
 
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Cross-Origin-Opener-Policy': 'same-origin',
-  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+  'Permissions-Policy': 'camera=(), microphone=(self), geolocation=(), payment=(), usb=()',
   'Content-Security-Policy':
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
 };
 
 export class Router {
@@ -459,6 +459,7 @@ function applyAuth(ctx, auth) {
 function serveStatic(req, res, pathname, config, securityHeaders) {
   let relative;
   if (isIndexRequest(pathname)) relative = 'index.html';
+  else if (pathname === '/setup.html') relative = 'setup.html';
   else if (pathname === '/admin' || pathname === '/admin/') relative = 'admin/index.html';
   else if (pathname === '/favicon.ico') relative = 'assets/brand/favicon.ico';
   else if (pathname === '/manifest.webmanifest') relative = 'manifest.webmanifest';

@@ -10,7 +10,7 @@
 import '../server/core/silence-sqlite-warning.mjs';
 import path from 'node:path';
 import { config, ensureRuntimeDirs } from '../server/config.mjs';
-import { closeDatabase, get, migrate, openDatabase, run, tx } from '../server/core/db.mjs';
+import { assertOpenedDatabasePath, assertSchemaReady, closeDatabase, get, migrate, openDatabase, run, tx, validateMigrationPolicy } from '../server/core/db.mjs';
 import { hashPassword } from '../server/core/crypto.mjs';
 import { ensureWorkspaceDefaults } from '../server/services/settings.mjs';
 
@@ -926,9 +926,12 @@ function seed() {
 }
 
 ensureRuntimeDirs();
+validateMigrationPolicy({ allowlist: config.migrations.allowlist, expectedDbPath: config.migrations.expectedDbPath, actualDbPath: config.dbFile, dataDir: config.dataDir, expectedDataDir: process.env.DATA_DIR || config.dataDir });
 const db = openDatabase(config.dbFile);
 try {
-  migrate(db, path.join(config.rootDir, 'server', 'db', 'migrations'));
+  assertOpenedDatabasePath(db, config.migrations.expectedDbPath);
+  migrate(db, path.join(config.rootDir, 'server', 'db', 'migrations'), { allowlist: config.migrations.allowlist, expectedDbPath: config.migrations.expectedDbPath, actualDbPath: config.dbFile });
+  assertSchemaReady(db);
   tx(() => seed());
   const user = get('SELECT email FROM users WHERE id = ?', [DEMO_USER]);
   console.log('');

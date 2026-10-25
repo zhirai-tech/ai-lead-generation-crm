@@ -209,6 +209,15 @@ const SECTION_RENDERERS = {
 
 const usageState = { days: 30, metric: 'aiTokens' };
 const auditState = { page: 1, action: '' };
+const subTabState = {
+  workspace: 'profile',
+  providers: 'all',
+  email: 'list',
+  outreach: 'policy',
+  compliance: 'policy',
+  usage: 'overview',
+  system: 'status',
+};
 
 export async function render(root, params, ctx) {
   clear(root);
@@ -342,6 +351,68 @@ function factGrid(items) {
     grid.appendChild(node);
   }
   return grid;
+}
+
+/**
+ * Secondary module navigation for one settings group: only one card is visible
+ * at a time and switching never re-renders the module, so typed form values are
+ * preserved. The active sub-tab is remembered across section reloads.
+ */
+function subTabs(key, items, fallbackKey) {
+  const validFallback = items.some((item) => item.key === fallbackKey) ? fallbackKey : items[0]?.key;
+  let active = items.some((item) => item.key === subTabState[key]) ? subTabState[key] : validFallback;
+  subTabState[key] = active;
+
+  const body = el('div', 'page-module-body');
+  const wrappers = new Map();
+  for (const item of items) {
+    const wrapper = el('div', 'page-module');
+    wrapper.appendChild(item.node);
+    wrappers.set(item.key, wrapper);
+    body.appendChild(wrapper);
+  }
+
+  const root = el('div', 'stack page-module-tabs');
+  let nav = null;
+
+  const paint = () => {
+    for (const [itemKey, wrapper] of wrappers) {
+      wrapper.classList.toggle('hidden', itemKey !== active);
+    }
+    if (nav) {
+      const index = items.findIndex((item) => item.key === active);
+      const buttons = nav.querySelectorAll('button');
+      buttons.forEach((node, buttonIndex) => node.classList.toggle('active', buttonIndex === index));
+    }
+  };
+
+  if (items.length > 1) {
+    const navWrap = el('div', 'page-subtabs');
+    nav = segmented({
+      items: items.map((item) => ({ value: item.key, label: item.label })),
+      value: active,
+      onChange: (value) => {
+        if (!wrappers.has(value)) return;
+        active = value;
+        subTabState[key] = value;
+        paint();
+      },
+    });
+    navWrap.appendChild(nav);
+    root.appendChild(navWrap);
+  }
+
+  root.appendChild(body);
+  paint();
+
+  const show = (value) => {
+    if (!wrappers.has(value)) return;
+    active = value;
+    subTabState[key] = value;
+    paint();
+  };
+
+  return { node: root, show, active: () => active };
 }
 
 function jsonBlock(value, { tall = false } = {}) {
@@ -520,29 +591,34 @@ async function renderWorkspaceSection(host) {
   );
   form.appendChild(el('div', 'row', [saveButton]));
 
-  host.appendChild(
-    card({
-      title: '工作空间资料',
-      help: '修改名称属于管理操作；删除工作空间为高危操作，当前界面不提供入口，需要由拥有者在数据库层面处理。',
-      body: form,
-    }),
+  const profileCard = card({
+    title: '工作空间资料',
+    help: '修改名称属于管理操作；删除工作空间为高危操作，当前界面不提供入口，需要由拥有者在数据库层面处理。',
+    body: form,
+  });
+  const infoCard = card({
+    title: '工作空间信息',
+    body: kvList([
+      { label: '工作空间 ID', value: el('span', 'mono', workspace.id || '—') },
+      { label: '标识', value: workspace.slug || '—' },
+      { label: '状态', value: workspace.status || '—' },
+      { label: '创建时间', value: workspace.createdAt ? formatDateTime(workspace.createdAt) : '—' },
+      { label: '当前角色', value: badge(ROLE_LABELS[me.role] || me.roleLabel || me.role || '—', ROLE_TONES[me.role] || 'gray') },
+      { label: '成员数', value: formatNumber(counts.members ?? 0) },
+      { label: '企业数', value: formatNumber(counts.companies ?? 0) },
+      { label: '联系人', value: formatNumber(counts.contacts ?? 0) },
+      { label: '产品数', value: formatNumber(counts.products ?? 0) },
+    ]),
+  });
+  const tabs = subTabs(
+    'workspace',
+    [
+      { key: 'profile', label: '工作空间资料', node: profileCard },
+      { key: 'info', label: '工作空间信息', node: infoCard },
+    ],
+    'profile',
   );
-  host.appendChild(
-    card({
-      title: '工作空间信息',
-      body: kvList([
-        { label: '工作空间 ID', value: el('span', 'mono', workspace.id || '—') },
-        { label: '标识', value: workspace.slug || '—' },
-        { label: '状态', value: workspace.status || '—' },
-        { label: '创建时间', value: workspace.createdAt ? formatDateTime(workspace.createdAt) : '—' },
-        { label: '当前角色', value: badge(ROLE_LABELS[me.role] || me.roleLabel || me.role || '—', ROLE_TONES[me.role] || 'gray') },
-        { label: '成员数', value: formatNumber(counts.members ?? 0) },
-        { label: '企业数', value: formatNumber(counts.companies ?? 0) },
-        { label: '联系人', value: formatNumber(counts.contacts ?? 0) },
-        { label: '产品数', value: formatNumber(counts.products ?? 0) },
-      ]),
-    }),
-  );
+  host.appendChild(tabs.node);
   if (!canEdit) host.appendChild(permissionNotice('workspace.update', '修改工作空间'));
 }
 
@@ -822,7 +898,7 @@ function normalizeMember(raw) {
 
 async function renderAiSection(host) {
   clear(host);
-  host.appendChild(loadingBlock('正在加载 AI 配置…'));
+  host.appendChild(loadingBlock('正在加载模型配置…'));
   let settingsResponse = null;
   let settingsError = null;
   let catalogResponse = null;
@@ -838,264 +914,317 @@ async function renderAiSection(host) {
   }
   clear(host);
   if (settingsError) {
-    host.appendChild(
-      notice(`设置接口暂不可用，已显示默认值（保存可能失败）：${settingsError.message}`, 'warn'),
-    );
+    host.appendChild(notice(`设置接口暂不可用，已显示默认值（保存可能失败）：${settingsError.message}`, 'warn'));
   }
+
   const settings = normalizeSettings(settingsResponse?.settings);
   const ai = settings.ai;
   const credentials = asArray(settingsResponse?.credentials)
     .map(normalizeCredential)
-    .filter((item) => item?.kind === 'ai_provider');  const providerState = asObject(catalogResponse?.provider);
+    .filter((item) => item?.kind === 'ai_provider');
+  const providerState = asObject(catalogResponse?.provider);
   const canManage = can('settings.manage');
   const canCredentials = can('credentials.manage');
+  const canTest = can('agents.run');
   const reload = () => renderAiSection(host);
 
-  // Current provider status + connection test
-  const testResultHost = el('div', 'stack');
-  const testButton = button('测试连接', {
-    iconName: 'zap',
-    disabled: !can('agents.run'),
-    title: disabledTip('agents.run'),
-    onClick: () => runProviderTest(testButton, testResultHost),
-  });
-  const simulation = providerState.provider === 'simulation' || (!providerState.provider && ai.provider === 'simulation');
-  const statusBody = el('div', 'stack');
-  statusBody.appendChild(
-    factGrid([
-      { label: '生效 Provider', value: badge(PROVIDER_LABELS[ai.provider] || ai.provider || '—', simulation ? 'purple' : 'cyan') },
-      { label: '生效模型', value: ai.model || '—' },
-      { label: '配置状态', value: badge(providerState.configured ? '已配置' : '未配置', providerState.configured ? 'green' : 'yellow') },
-      {
-        label: '可达性',
-        value:
-          providerState.reachable === undefined || providerState.reachable === null
-            ? badge('未检测', 'gray')
-            : badge(providerState.reachable ? '可达' : '不可达', providerState.reachable ? 'green' : 'red'),
-      },
-      { label: '最近检查', value: providerState.lastCheckedAt ? formatDateTime(providerState.lastCheckedAt) : '—' },
-    ]),
-  );
-  if (simulation) {
-    statusBody.appendChild(
-      notice('当前为离线模拟模式，用于演示与测试，不代表真实模型结果。保存 OpenAI 兼容凭据后可切换到真实模型。', 'warn'),
-    );
-  }
-  statusBody.appendChild(el('div', 'row', [testButton]));
-  statusBody.appendChild(testResultHost);
-  host.appendChild(
-    card({
-      title: '当前模型状态',
-      help: '状态来自服务端读取的 Provider 配置与最近一次连通性检查；此处不显示任何密钥。',
-      body: statusBody,
-    }),
-  );
+  const openaiCredential = credentials.find((item) => item.providerKey === 'openai_compatible') || null;
+  const credentialConfig = asObject(openaiCredential?.config);
+  const providerKey = ai.provider || providerState.provider || 'simulation';
+  const isSimulation = providerKey === 'simulation';
+  const effectiveModel = ai.model || credentialConfig.model || providerState.model || '—';
 
-  // Model settings form
-  const providerSelect = select({
-    value: ai.provider || 'simulation',
+  const statusItem = (label, value) => {
+    const node = el('span', 'row');
+    append(node, [el('span', 'muted', label), el('span', 'dim', value)]);
+    return node;
+  };
+
+  // Compact status strip: current model, configuration state and last check.
+  const statusStrip = el('div', 'toolbar page-ai-status');
+  append(statusStrip, [
+    statusItem(
+      '当前模型',
+      isSimulation
+        ? '内置模拟（离线）'
+        : `${PROVIDER_LABELS[providerKey] || providerKey} · ${effectiveModel}`,
+    ),
+    statusItem(
+      '状态',
+      isSimulation
+        ? badge('离线模拟', 'purple')
+        : providerState.configured
+          ? badge('已配置', 'green')
+          : badge('未配置', 'yellow'),
+    ),
+    statusItem(
+      '可达性',
+      providerState.reachable === undefined || providerState.reachable === null
+        ? badge('未检测', 'gray')
+        : badge(providerState.reachable ? '可达' : '不可达', providerState.reachable ? 'green' : 'red'),
+    ),
+    statusItem('最近检查', providerState.lastCheckedAt ? formatDateTime(providerState.lastCheckedAt) : '—'),
+  ]);
+  host.appendChild(statusStrip);
+
+  // ------------------------------------------------------------ single form
+  const serviceSelect = select({
+    value: isSimulation ? 'simulation' : 'openai_compatible',
     options: [
-      { value: 'simulation', label: '内置模拟模型（离线）' },
-      { value: 'openai_compatible', label: 'OpenAI 兼容接口' },
+      { value: 'openai_compatible', label: 'OpenAI 兼容接口（DeepSeek / OpenAI 等）' },
+      { value: 'simulation', label: '内置模拟（离线演示）' },
     ],
-    onChange: (value) => {
-      if (value === 'simulation') {
-        modelInput.value = modelInput.value || 'zhirai-sim-1';
-      }
-    },
+    onChange: () => syncServiceMode(),
   });
-  const modelInput = input({ value: ai.model || '', placeholder: '如 deepseek-chat / gpt-4o-mini' });
+  const baseUrlInput = input({
+    value: credentialConfig.baseUrl || 'https://api.deepseek.com/v1',
+    placeholder: 'https://api.deepseek.com/v1',
+  });
+  const modelInput = input({
+    value: credentialConfig.model || ai.model || 'deepseek-chat',
+    placeholder: '例如 deepseek-chat',
+  });
+  const apiKeyInput = input({
+    value: '',
+    type: 'password',
+    autocomplete: 'new-password',
+    placeholder: openaiCredential ? '已保存 API Key，留空则不修改' : '粘贴 API Key（保存后不回显）',
+  });
   const temperatureInput = numberInput(ai.temperature ?? 0.3, { min: 0, max: 2, step: 0.1 });
   const maxTokensInput = numberInput(ai.maxTokensPerRun ?? 4096, { min: 64, max: 8192, step: 1 });
-  const aiForm = el('div', 'form-grid page-form');
-  append(aiForm, [
-    field('Provider', providerSelect, { required: true, help: '模拟模型用于离线演示；真实调用需要配置 OpenAI 兼容接口凭据。' }),
-    field('模型名称', modelInput, { required: true, help: '由所选服务商提供的模型 ID。' }),
-    field('Temperature', temperatureInput, { help: '0 更稳定，1 更发散；建议 0.2–0.5。' }),
-    field('单次最大 Token', maxTokensInput, { help: '服务端会再限制在 64–8192 之间。' }),
+
+  const wide = (node) => {
+    node.classList.add('span-2');
+    return node;
+  };
+
+  const connectionFields = el('div', 'form-grid page-form page-ai-connection');
+  append(connectionFields, [
+    wide(
+      field('请求地址 Base URL', baseUrlInput, {
+        required: true,
+        help: 'DeepSeek 常用 https://api.deepseek.com/v1；OpenAI 为 https://api.openai.com/v1。',
+      }),
+    ),
+    wide(
+      field('API Key', apiKeyInput, {
+        required: !openaiCredential,
+        help: openaiCredential
+          ? '已保存密钥，留空表示继续使用；修改请求地址或模型 ID 时需要重新填写。密钥不会回显。'
+          : '密钥由服务端加密保存，保存后任何页面都不会回显明文。',
+      }),
+    ),
   ]);
-  const saveAiButton = button('保存模型设置', {
+
+  const modelField = field('模型 ID', modelInput, {
+    required: true,
+    help: '由服务商提供的模型标识，例如 deepseek-chat、gpt-4o-mini。所有 Agent 共用。',
+  });
+  const serviceModelFields = el('div', 'form-grid page-form');
+  append(serviceModelFields, [
+    field('模型服务', serviceSelect, { required: true, help: '选择真实接口或离线模拟；所有 Agent 共用这一个模型。' }),
+    modelField,
+  ]);
+
+  const simulationNote = notice('内置模拟模式仅用于演示与测试，不会调用外部模型，也不产生费用。', 'info');
+
+  const advanced = el('details', 'page-advanced');
+  const advancedSummary = el('summary', '', '高级参数（温度 / 单次最大 Token）');
+  const advancedGrid = el('div', 'form-grid page-form');
+  append(advancedGrid, [
+    field('温度 Temperature', temperatureInput, { help: '0 更稳定，1 更发散；建议 0.2–0.5。' }),
+    field('单次最大 Token', maxTokensInput, { help: '服务端会限制在 64–8192 之间。' }),
+  ]);
+  append(advanced, [advancedSummary, advancedGrid]);
+
+  const testResultHost = el('div', 'stack page-ai-test-result');
+
+  const testButton = button('测试连接', {
+    iconName: 'zap',
+    onClick: () => runProviderTest(testButton, testResultHost),
+  });
+  const saveButton = button('保存并应用', {
     variant: 'primary',
     iconName: 'check',
-    disabled: !canManage,
-    title: disabledTip('settings.manage'),
     onClick: async () => {
-      const provider = providerSelect.value;
-      const model = modelInput.value.trim();
+      const provider = serviceSelect.value;
       const temperature = toNumber(temperatureInput.value, NaN);
       const maxTokensPerRun = readInt(maxTokensInput, NaN);
-      if (!model) {
-        toast('请填写模型名称', 'error');
-        modelInput.focus();
-        return;
-      }
       if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
-        toast('Temperature 必须在 0 到 2 之间', 'error');
+        toast('温度必须在 0 到 2 之间', 'error');
         temperatureInput.focus();
+        advanced.open = true;
         return;
       }
       if (!Number.isFinite(maxTokensPerRun) || maxTokensPerRun < 64 || maxTokensPerRun > 8192) {
         toast('单次最大 Token 必须在 64 到 8192 之间', 'error');
         maxTokensInput.focus();
+        advanced.open = true;
         return;
       }
-      saveAiButton.disabled = true;
-      try {
-        await api.patch('/api/v1/settings', {
-          ai: { provider, model, temperature, maxTokensPerRun },
-        });
-        toast('模型设置已保存', 'success');
-        reload();
-      } catch (error) {
-        toast(error?.message || '保存失败', 'error');
-        saveAiButton.disabled = !canManage;
-      }
-    },
-  });
-  aiForm.appendChild(el('div', 'span-2 row', [saveAiButton]));
-  host.appendChild(card({ title: '模型参数', help: '参数对全部 Agent 生效；Token 预算与单次上限共同控制成本。', body: aiForm }));
+      const model = modelInput.value.trim();
 
-  // Credential form
-  const existing = credentials.find((item) => item.providerKey === 'openai_compatible');
-  const baseUrlInput = input({ value: existing?.config?.baseUrl || 'https://api.deepseek.com', placeholder: 'https://api.example.com' });
-  const credModelInput = input({ value: existing?.config?.model || ai.model || 'deepseek-chat', placeholder: 'deepseek-chat' });
-  const labelInput = input({ value: existing?.label || '生产密钥', placeholder: '凭据名称' });
-  const apiKeyInput = input({ value: '', placeholder: '粘贴 API Key（保存后不回显）', type: 'password', autocomplete: 'new-password' });
-  const credForm = el('div', 'form-grid page-form');
-  append(credForm, [
-    field('Base URL', baseUrlInput, { required: true, help: 'OpenAI 兼容接口根地址，如服务商文档所示。' }),
-    field('模型', credModelInput, { required: true }),
-    field('凭据名称', labelInput, { help: '仅用于在列表中区分密钥。' }),
-    field('API Key', apiKeyInput, { required: true, help: '密钥由服务端加密保存，任何接口都不会回显明文。' }),
-  ]);
-  const saveCredButton = button('保存凭据', {
-    variant: 'primary',
-    iconName: 'key',
-    disabled: !canCredentials,
-    title: disabledTip('credentials.manage'),
-    onClick: async () => {
+      if (provider === 'simulation') {
+        saveButton.disabled = true;
+        try {
+          await api.patch('/api/v1/settings', {
+            ai: { provider: 'simulation', model: 'zhirai-sim-1', temperature, maxTokensPerRun },
+          });
+          toast('已切换到内置模拟模型', 'success');
+          reload();
+        } catch (error) {
+          toast(error?.message || '保存失败', 'error');
+          saveButton.disabled = false;
+        }
+        return;
+      }
+
       const baseUrl = baseUrlInput.value.trim();
-      const model = credModelInput.value.trim();
       const apiKey = apiKeyInput.value.trim();
       if (!/^https?:\/\/[^\s]+$/i.test(baseUrl)) {
-        toast('Base URL 必须是 http(s) 地址', 'error');
+        toast('请求地址 Base URL 必须是 http(s) 地址', 'error');
         baseUrlInput.focus();
         return;
       }
       if (!model) {
-        toast('请填写模型名称', 'error');
-        credModelInput.focus();
+        toast('请填写模型 ID', 'error');
+        modelInput.focus();
         return;
       }
-      if (apiKey.length < 8) {
+      const isLocalEndpoint = /^https?:\/\/(?:localhost|127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/i.test(baseUrl)
+        || /ollama/i.test(baseUrl);
+      if (!openaiCredential && !apiKey && !isLocalEndpoint) {
+        toast('请填写 API Key', 'error');
+        apiKeyInput.focus();
+        return;
+      }
+      if (apiKey && apiKey.length < 8) {
         toast('API Key 长度不足（至少 8 位）', 'error');
         apiKeyInput.focus();
         return;
       }
-      saveCredButton.disabled = true;
+      const configChanged =
+        openaiCredential &&
+        (baseUrl !== String(credentialConfig.baseUrl || '') || model !== String(credentialConfig.model || ''));
+      if (!apiKey && configChanged && !isLocalEndpoint) {
+        toast('修改请求地址或模型 ID 后需要重新填写 API Key（已保存的密钥不会回显）', 'error');
+        apiKeyInput.focus();
+        return;
+      }
+
+      saveButton.disabled = true;
       try {
-        await api.put('/api/v1/settings/credentials/ai_provider/openai_compatible', {
-          label: labelInput.value.trim() || 'AI Provider',
-          secret: { apiKey },
-          config: { baseUrl, model },
+        if (!apiKey && isLocalEndpoint) {
+          // Local/LAN Ollama does not use an API key. Saving through the model
+          // setup endpoint replaces the endpoint without deleting the model.
+          await api.post('/api/v1/model-setup/use', { baseUrl, model });
+        } else if (apiKey) {
+          await api.put('/api/v1/settings/credentials/ai_provider/openai_compatible', {
+            label: openaiCredential?.label || '全局模型',
+            secret: { apiKey },
+            config: { baseUrl, model },
+          });
+        }
+        await api.patch('/api/v1/settings', {
+          ai: { provider: 'openai_compatible', model, temperature, maxTokensPerRun },
         });
         apiKeyInput.value = '';
-        toast('凭据已加密保存', 'success');
+        toast('模型配置已保存并应用到全部 Agent', 'success');
         reload();
       } catch (error) {
-        toast(error?.message || '凭据保存失败', 'error');
-        saveCredButton.disabled = !canCredentials;
+        toast(error?.message || '保存失败', 'error');
+        saveButton.disabled = false;
       }
     },
   });
-  credForm.appendChild(el('div', 'span-2 row', [saveCredButton]));
-  const credCardBody = el('div', 'stack');
-  credCardBody.appendChild(credForm);
+
+  const actionRow = el('div', 'row page-ai-actions');
+  append(actionRow, [saveButton, testButton]);
+
+  const formBody = el('div', 'stack');
+  append(formBody, [serviceModelFields, simulationNote, connectionFields, advanced, actionRow, testResultHost]);
+
+  // -------------------------------------------------------- saved credential
+  const credList = el('div', 'detail-list');
+  if (!credentials.length) {
+    credList.appendChild(el('div', 'muted', '还没有保存凭据；保存上面的 API Key 后会在这里显示掩码。'));
+  } else {
+    for (const credential of credentials) {
+      const info = el('div', '');
+      const configText = [asObject(credential.config).baseUrl, asObject(credential.config).model].filter(Boolean).join(' / ');
+      append(info, [
+        el('div', '', credential.label || credential.providerKey || 'AI 凭据'),
+        el('div', 'cell-sub mono', `${credential.providerKey || '—'} · ${maskPreview(credential)}`),
+        configText ? el('div', 'cell-sub mono page-break', configText) : null,
+      ]);
+      const removeButton = button('删除', {
+        variant: 'ghost',
+        size: 'sm',
+        iconName: 'trash',
+        disabled: !canCredentials,
+        title: disabledTip('credentials.manage'),
+        onClick: async () => {
+          const confirmed = await confirmDialog({
+            title: '删除凭据',
+            message: `将删除凭据「${credential.label || credential.providerKey}」。删除后真实模型调用会失败，需要重新填写 API Key。`,
+            confirmText: '删除',
+            danger: true,
+          });
+          if (!confirmed) return;
+          try {
+            await api.delete(`/api/v1/settings/credentials/${encodeURIComponent(credential.id)}`);
+            toast('凭据已删除', 'success');
+            reload();
+          } catch (error) {
+            toast(error?.message || '删除失败', 'error');
+          }
+        },
+      });
+      const row = el('div', 'detail-row');
+      append(row, [info, removeButton]);
+      credList.appendChild(row);
+    }
+  }
+
+  const cardBody = el('div', 'stack');
+  append(cardBody, [
+    formBody,
+    el('div', 'divider'),
+    sectionTitle('已保存凭据', '只显示掩码；删除后需要重新填写 API Key。'),
+    credList,
+  ]);
   host.appendChild(
     card({
-      title: 'OpenAI 兼容接口凭据',
-      help: '用于真实模型调用。保存后请在「模型参数」中把 Provider 切为 openai_compatible，并测试连接。',
-      body: credCardBody,
+      title: '模型配置',
+      help: '所有 Agent 共用这一个全局模型。保存后立即对全部 Agent 生效；如需更换模型，只需修改这里。',
+      body: cardBody,
     }),
   );
 
-  // Credential list
-  const credColumns = [
-    {
-      key: 'label',
-      label: '名称',
-      render: (row) => {
-        const wrap = el('div');
-        append(wrap, [
-          el('div', 'cell-main', row.label || row.providerKey || '—'),
-          el('div', 'cell-sub mono', row.providerKey || ''),
-        ]);
-        return wrap;
-      },
-    },
-    {
-      key: 'config',
-      label: '接口配置',
-      render: (row) => {
-        const config = asObject(row.config);
-        const textValue = [config.baseUrl, config.model].filter(Boolean).join(' / ');
-        return el('span', 'mono page-break', truncate(textValue || '—', 60));
-      },
-    },
-    { key: 'secret', label: '密钥', render: (row) => el('span', 'mono muted', maskPreview(row)) },
-    {
-      key: 'status',
-      label: '状态',
-      render: (row) => badge(row.status === 'active' || !row.status ? '有效' : row.status, row.status === 'active' || !row.status ? 'green' : 'gray'),
-    },
-    { key: 'updatedAt', label: '更新时间', render: (row) => el('span', 'muted nowrap', formatDateTime(row.updatedAt)) },
-    {
-      key: 'actions',
-      label: '操作',
-      className: 'cell-actions',
-      render: (row) =>
-        button('删除', {
-          variant: 'ghost',
-          size: 'sm',
-          iconName: 'trash',
-          disabled: !canCredentials,
-          title: disabledTip('credentials.manage'),
-          onClick: async () => {
-            const confirmed = await confirmDialog({
-              title: '删除凭据',
-              message: `将删除凭据「${row.label || row.providerKey}」。删除后真实模型调用会失败，需要重新配置。`,
-              confirmText: '删除',
-              danger: true,
-            });
-            if (!confirmed) return;
-            try {
-              await api.delete(`/api/v1/settings/credentials/${encodeURIComponent(row.id)}`);
-              toast('凭据已删除', 'success');
-              reload();
-            } catch (error) {
-              toast(error?.message || '删除失败', 'error');
-            }
-          },
-        }),
-    },
-  ];
-  host.appendChild(
-    card({
-      title: '已保存凭据',
-      help: '列表只显示掩码预览。数据源、邮箱等其它凭据在对应分组维护。',
-      body: dataTable({
-        columns: credColumns,
-        rows: credentials,
-        empty: emptyState({
-          iconName: 'key',
-          title: '还没有保存 AI 凭据',
-          description: '保存 OpenAI 兼容接口凭据后，可切换到真实模型。',
-        }),
-      }),
-    }),
-  );
-  if (!canManage) host.appendChild(permissionNotice('settings.manage', '修改模型设置'));
-  if (!canCredentials) host.appendChild(permissionNotice('credentials.manage', '管理凭据'));
+  if (!canManage) host.appendChild(permissionNotice('settings.manage', '修改模型配置'));
+  if (!canCredentials) host.appendChild(permissionNotice('credentials.manage', '保存或删除 API Key'));
+
+  function syncServiceMode() {
+    const simulation = serviceSelect.value === 'simulation';
+    connectionFields.classList.toggle('hidden', simulation);
+    modelField.classList.toggle('hidden', simulation);
+    advanced.classList.toggle('hidden', simulation);
+    simulationNote.classList.toggle('hidden', !simulation);
+    saveButton.disabled = !canManage || (!simulation && !canCredentials);
+    saveButton.title = !canManage
+      ? disabledTip('settings.manage')
+      : !simulation && !canCredentials
+        ? disabledTip('credentials.manage')
+        : '';
+    testButton.disabled = !canTest || (!simulation && !openaiCredential);
+    testButton.title = !canTest
+      ? disabledTip('agents.run')
+      : !simulation && !openaiCredential
+        ? '保存 API Key 后即可测试'
+        : '测试当前已保存的模型配置';
+  }
+
+  syncServiceMode();
 }
 
 /* ------------------------------------------------------------- providers */
@@ -1195,21 +1324,148 @@ async function renderProvidersSection(host) {
     },
   ];
 
+  const categoryOrder = ['search', 'enrichment', 'verification', 'ai'];
+  const categories = [...new Set(providers.map((item) => item.category).filter(Boolean))].sort(
+    (left, right) => categoryOrder.indexOf(left) - categoryOrder.indexOf(right),
+  );
+
+  const providerCard = (rows, label) =>
+    card({
+      title: '外部数据源',
+      help: '启停与配置即时生效；API 密钥等敏感凭据由服务端加密保存，不在此处回显。',
+      actions: [el('span', 'muted page-updated', `${label} · 共 ${formatNumber(rows.length)} 个`)],
+      body: dataTable({
+        columns,
+        rows,
+        empty: emptyState({
+          iconName: 'database',
+          title: '该类别还没有数据源',
+          description: '后端初始化后会写入模拟数据源、公开网站抓取等目录。',
+        }),
+      }),
+    });
+
+  if (categories.length <= 1) {
+    host.appendChild(providerCard(providers, '数据源列表'));
+  } else {
+    const items = [{ key: 'all', label: '全部', node: providerCard(providers, '全部数据源') }];
+    for (const category of categories) {
+      const label = CATEGORY_LABELS[category]?.[0] || category;
+      items.push({
+        key: category,
+        label,
+        node: providerCard(providers.filter((item) => item.category === category), label),
+      });
+    }
+    const tabs = subTabs('providers', items, 'all');
+    host.appendChild(tabs.node);
+  }
+  const braveKeyInput = input({
+    value: '',
+    type: 'password',
+    placeholder: '粘贴 Brave Search API Key（留空不改）',
+    autocomplete: 'new-password',
+  });
+  const serperKeyInput = input({
+    value: '',
+    type: 'password',
+    placeholder: '粘贴 Serper API Key（留空不改）',
+    autocomplete: 'new-password',
+  });
+  const tavilyKeyInput = input({
+    value: '',
+    type: 'password',
+    placeholder: '粘贴 Tavily API Key（留空不改）',
+    autocomplete: 'new-password',
+  });
+  const saveSearchKeysBtn = button('保存搜索 API Key', {
+    variant: 'primary',
+    iconName: 'key',
+    disabled: !can('credentials.manage'),
+    onClick: async () => {
+      const brave = braveKeyInput.value.trim();
+      const serper = serperKeyInput.value.trim();
+      const tavily = tavilyKeyInput.value.trim();
+      if (!brave && !serper && !tavily) {
+        toast('至少填写一个 API Key', 'warning');
+        return;
+      }
+      saveSearchKeysBtn.disabled = true;
+      try {
+        if (brave) {
+          await api.put('/api/v1/settings/credentials/data_provider/brave', {
+            label: 'Brave Search API',
+            secret: { apiKey: brave },
+            config: {},
+          });
+        }
+        if (serper) {
+          await api.put('/api/v1/settings/credentials/data_provider/serper', {
+            label: 'Serper Search API',
+            secret: { apiKey: serper },
+            config: {},
+          });
+        }
+        if (tavily) {
+          await api.put('/api/v1/settings/credentials/data_provider/tavily', {
+            label: 'Tavily Search API',
+            secret: { apiKey: tavily },
+            config: {},
+          });
+        }
+        toast('搜索 API Key 已保存，服务端加密存储', 'success');
+        braveKeyInput.value = '';
+        serperKeyInput.value = '';
+        tavilyKeyInput.value = '';
+        reload();
+      } catch (error) {
+        toast(error?.message || '保存失败', 'error');
+      } finally {
+        saveSearchKeysBtn.disabled = false;
+      }
+    },
+  });
+  const searchKeyLink = (href, label) => {
+    const link = el('a', 'link', label);
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noreferrer noopener';
+    return link;
+  };
   host.appendChild(
-    el('div', 'row-between', [
-      sectionTitle('外部数据源', '启停与配置即时生效；API 密钥等敏感凭据由服务端加密保存，不在此处回显。'),
-      el('span', 'muted page-updated', `共 ${formatNumber(providers.length)} 个数据源`),
-    ]),
+    card({
+      title: '全网搜索引擎 API Key',
+      help: 'Brave 和 Serper 用于搜索企业官网；没有 Key 时只能使用 OpenStreetMap。Key 由服务端加密保存，不会回显。',
+      body: el('div', 'stack', [
+        el('div', 'cell-sub', [
+          el('span', '', 'Brave 申请入口：'),
+          searchKeyLink('https://api-dashboard.search.brave.com/register', 'brave.com/search/api'),
+        ]),
+        field('Brave Search API Key', braveKeyInput),
+        el('div', 'cell-sub', [
+          el('span', '', 'Serper 申请入口：'),
+          searchKeyLink('https://serper.dev/', 'serper.dev'),
+        ]),
+        field('Serper API Key', serperKeyInput),
+        el('div', 'cell-sub', [
+          el('span', '', 'Tavily 免 Key 入口：'),
+          searchKeyLink('https://app.tavily.com', 'app.tavily.com'),
+          el('span', '', '（不填 Key 也可限额使用；填 Key 后额度更高）'),
+        ]),
+        field('Tavily API Key（可选）', tavilyKeyInput),
+        el('div', 'row', [saveSearchKeysBtn]),
+      ]),
+    }),
   );
   host.appendChild(
-    dataTable({
-      columns,
-      rows: providers,
-      empty: emptyState({
-        iconName: 'database',
-        title: '还没有数据源',
-        description: '后端初始化后会写入模拟数据源、公开网站抓取等目录。',
-      }),
+    card({
+      title: '数据源说明',
+      body: el('div', 'stack', [
+        el('div', 'cell-sub', 'CSV / 表格导入：导入你自己已有的企业表格，不是全网搜索。'),
+        el('div', 'cell-sub', 'DeepSeek：语言模型，只负责对话、分析和文案，不负责搜索企业。'),
+        el('div', 'cell-sub', 'Brave / Serper / Tavily：真正的全网企业搜索源，需要 API Key。'),
+        el('div', 'cell-sub', 'OpenStreetMap：免费真实地图数据，但通常没有邮箱，且进口商覆盖有限。'),
+      ]),
     }),
   );
   if (!canManage) host.appendChild(permissionNotice('settings.manage', '修改数据源'));
@@ -1336,13 +1592,14 @@ async function renderEmailAccountsSection(host) {
   const canManage = can('email.accounts.manage');
   const canSync = can('email.sync');
   const reload = () => renderEmailAccountsSection(host);
+  let tabs = null;
 
   const addButton = button('添加邮箱账户', {
     variant: 'primary',
     iconName: 'plus',
     disabled: !canManage,
     title: disabledTip('email.accounts.manage'),
-    onClick: () => openAccountModal(null, reload),
+    onClick: () => tabs?.show('create'),
   });
 
   const columns = [
@@ -1496,14 +1753,11 @@ async function renderEmailAccountsSection(host) {
     }
   }
 
-  host.appendChild(
-    el('div', 'row-between', [
-      el('div', 'row', [sectionTitle('邮箱账户', '密码只提交加密存储，保存后不会回显；发送仍受审批、抑制名单与发送窗口限制。')]),
-      addButton,
-    ]),
-  );
-  host.appendChild(
-    dataTable({
+  const listCard = card({
+    title: '邮箱账户列表',
+    help: '密码只提交加密存储，保存后不会回显；发送仍受审批、抑制名单与发送窗口限制。',
+    actions: [addButton],
+    body: dataTable({
       columns,
       rows: accounts,
       empty: emptyState({
@@ -1511,17 +1765,38 @@ async function renderEmailAccountsSection(host) {
         title: '还没有邮箱账户',
         description: '添加 SMTP/IMAP 账户或使用模拟邮箱，才能发送开发信与同步回复。',
         action: canManage
-          ? button('添加邮箱账户', { variant: 'primary', size: 'sm', iconName: 'plus', onClick: () => openAccountModal(null, reload) })
+          ? button('去新增账户', { variant: 'primary', size: 'sm', iconName: 'plus', onClick: () => tabs?.show('create') })
           : null,
       }),
     }),
+  });
+  const createCard = card({
+    title: '新增邮箱账户',
+    help: '真实邮箱需填写 SMTP / IMAP 与密码；Hostinger 用户可一键填入官方服务器地址。密码保存后不会回显。',
+    body: createAccountFormNode({
+      account: null,
+      onSaved: async () => {
+        subTabState.email = 'list';
+        await reload();
+      },
+    }),
+  });
+  tabs = subTabs(
+    'email',
+    [
+      { key: 'list', label: '账户列表', node: listCard },
+      { key: 'create', label: '新增账户', node: createCard },
+    ],
+    'list',
   );
+  host.appendChild(tabs.node);
   if (!canManage) host.appendChild(permissionNotice('email.accounts.manage', '管理邮箱账户'));
 }
 
-function openAccountModal(account, reload) {
+function createAccountFormNode({ account = null, onSaved = null } = {}) {
   let submitting = false;
   const isEdit = Boolean(account?.id);
+  const canSave = can('email.accounts.manage');
   const source = account || {
     protocol: 'smtp_imap',
     smtpPort: 587,
@@ -1557,6 +1832,25 @@ function openAccountModal(account, reload) {
   const dailyLimitInput = numberInput(source.dailyLimit ?? 50, { min: 1, max: 1000 });
   const errorBox = el('div', 'field-error hidden');
 
+  const hostingerButton = !isEdit
+    ? button('Hostinger 预设', {
+        variant: 'outline',
+        size: 'sm',
+        iconName: 'zap',
+        title: '填入 Hostinger 官方 SMTP / IMAP 地址与端口，不会填写密码',
+        onClick: () => {
+          protocolSelect.value = 'smtp_imap';
+          smtpHostInput.value = 'smtp.hostinger.com';
+          smtpPortInput.value = '465';
+          smtpSecureBox.querySelector('input').checked = true;
+          imapHostInput.value = 'imap.hostinger.com';
+          imapPortInput.value = '993';
+          imapSecureBox.querySelector('input').checked = true;
+          toast('已填入 Hostinger 预设，请补充邮箱地址与密码', 'info');
+        },
+      })
+    : null;
+
   const servers = el('div', 'form-grid page-form');
   append(servers, [
     field('SMTP 主机', smtpHostInput, { required: true }),
@@ -1582,21 +1876,25 @@ function openAccountModal(account, reload) {
   ]);
   body.appendChild(basics);
   body.appendChild(sectionTitle('服务器与登录'));
+  if (hostingerButton) {
+    const presetRow = el('div', 'row page-hostinger-row');
+    append(presetRow, [
+      hostingerButton,
+      helpTip('一键填入 Hostinger 官方 SMTP（smtp.hostinger.com:465，SSL）与 IMAP（imap.hostinger.com:993，SSL）；不会填写密码，请自行补充邮箱地址与密码。'),
+    ]);
+    body.appendChild(presetRow);
+  }
   body.appendChild(servers);
   body.appendChild(field('邮件签名', signatureInput, { help: '纯文本签名，会附加在发送邮件末尾。' }));
   body.appendChild(errorBox);
 
-  openModal({
-    title: isEdit ? '编辑邮箱账户' : '添加邮箱账户',
-    size: 'lg',
-    body,
-    actions: [
-      { label: '取消' },
-      {
-        label: isEdit ? '保存' : '添加',
-        variant: 'primary',
-        onClick: async (close) => {
-          if (submitting) return;
+  const saveButton = button(isEdit ? '保存修改' : '添加邮箱账户', {
+    variant: 'primary',
+    iconName: 'check',
+    disabled: !canSave,
+    title: disabledTip('email.accounts.manage'),
+    onClick: async () => {
+      if (submitting) return;
           errorBox.classList.add('hidden');
           const name = nameInput.value.trim();
           const address = addressInput.value.trim();
@@ -1677,18 +1975,37 @@ function openAccountModal(account, reload) {
               await api.post('/api/v1/email-accounts', payload);
               toast('邮箱账户已添加', 'success');
             }
-            close();
-            reload();
+            await onSaved?.();
           } catch (error) {
             errorBox.textContent = error?.message || '保存失败';
             errorBox.classList.remove('hidden');
           } finally {
             submitting = false;
+            saveButton.disabled = !canSave;
           }
         },
-      },
-    ],
   });
+  body.appendChild(el('div', 'row', [saveButton]));
+  return body;
+}
+
+function openAccountModal(account, reload) {
+  let closeModal = () => {};
+  const isEdit = Boolean(account?.id);
+  const formNode = createAccountFormNode({
+    account,
+    onSaved: async () => {
+      closeModal();
+      await reload();
+    },
+  });
+  const modal = openModal({
+    title: isEdit ? '编辑邮箱账户' : '添加邮箱账户',
+    size: 'lg',
+    body: formNode,
+    actions: [{ label: '取消' }],
+  });
+  closeModal = modal.close;
 }
 
 function normalizeAccount(raw) {
@@ -1739,8 +2056,8 @@ async function renderOutreachSection(host) {
   const windowSettings = asObject(outreach.sendWindow);
 
   // Sending policy
-  const approvalBox = checkControl('发送前需要人工审批', outreach.requireApproval !== false);
-  const autoSendBox = checkControl('开启自动发送（仍需通过全部发送前检查）', outreach.autoSendEnabled === true);
+  const approvalBox = checkControl('人工审批（关闭 = AI 草稿自动批准）', outreach.requireApproval !== false);
+  const autoSendBox = checkControl('开启自动发送（仍受全部发送前检查限制）', outreach.autoSendEnabled === true);
   const dailySendInput = numberInput(outreach.dailySendLimit ?? 50, { min: 1, max: 1000 });
   const startSelect = select({
     value: String(windowSettings.start ?? 9),
@@ -1781,8 +2098,12 @@ async function renderOutreachSection(host) {
 
   const outreachForm = el('div', 'form-grid page-form');
   append(outreachForm, [
-    field('人工审批', approvalBox, { help: '默认开启：草稿必须人工批准后才会发送。' }),
-    field('自动发送', autoSendBox, { help: '只对已批准且通过抑制、接管、窗口与限额检查的邮件生效。' }),
+    field('人工审批', approvalBox, {
+      help: '关闭后 AI 草稿会自动变为“已批准”；发送仍需手动触发，或由自动发送结合发送窗口检查执行。默认建议保持开启。',
+    }),
+    field('自动发送', autoSendBox, {
+      help: '自动发送仍受审批、抑制名单、人工接管、发送窗口与限额限制；关闭人工审批不等于自动发送。',
+    }),
     field('每日发送上限', dailySendInput, { required: true, help: '工作空间级每日发送上限（1–1000）。' }),
     field('默认语言', languageSelect, { help: '生成开发信时的默认语言。' }),
     field('发送窗口开始', startSelect, { help: '仅在窗口内发送，时区见右侧。' }),
@@ -1839,13 +2160,11 @@ async function renderOutreachSection(host) {
     },
   });
   outreachForm.appendChild(el('div', 'span-2 row', [saveOutreachButton]));
-  host.appendChild(
-    card({
-      title: '发送策略',
-      help: '默认人工审批；自动发送仍受退订/抑制名单、人工接管、发送窗口、账号与工作空间日限额、退信熔断限制。',
-      body: outreachForm,
-    }),
-  );
+  const policyCard = card({
+    title: '发送策略',
+    help: '默认开启人工审批。关闭人工审批后 AI 草稿会自动变为已批准，但发送仍需手动触发或由自动发送结合发送窗口执行；自动发送仍受审批、抑制名单、人工接管、发送窗口与限额限制。',
+    body: outreachForm,
+  });
 
   // Resource limits
   const limitFields = [
@@ -1890,13 +2209,20 @@ async function renderOutreachSection(host) {
     },
   });
   limitForm.appendChild(el('div', 'span-2 row', [saveLimitsButton]));
-  host.appendChild(
-    card({
-      title: '资源与成本限额',
-      help: '限额用于控制外部请求、AI Token 与抓取成本；超限时任务会被拒绝或延后，而不是伪造成功。',
-      body: limitForm,
-    }),
+  const limitsCard = card({
+    title: '资源与成本限额',
+    help: '限额用于控制外部请求、AI Token 与抓取成本；超限时任务会被拒绝或延后，而不是伪造成功。',
+    body: limitForm,
+  });
+  const tabs = subTabs(
+    'outreach',
+    [
+      { key: 'policy', label: '发送策略', node: policyCard },
+      { key: 'limits', label: '资源与成本限额', node: limitsCard },
+    ],
+    'policy',
   );
+  host.appendChild(tabs.node);
   if (!canManage) host.appendChild(permissionNotice('settings.manage', '修改发送与限额'));
 }
 
@@ -1929,16 +2255,44 @@ async function renderComplianceSection(host) {
   const privacyInput = input({ value: compliance.privacyUrl || '', placeholder: 'https://example.com/privacy', type: 'url' });
   const dncInput = textarea({ value: compliance.doNotContactNote || '', rows: 2, placeholder: '拒绝联系说明/记录方式' });
 
-  const form = el('div', 'form-grid page-form');
-  append(form, [
+  const policyForm = el('div', 'form-grid page-form');
+  append(policyForm, [
     field('法律依据', legalSelect, { required: true, help: 'B2B 营销常用正当利益，但仍需按目标国家规则评估。' }),
     field('退订机制', unsubscribeBox, { help: '建议始终保留；退订会自动加入抑制名单并停止自动化。' }),
+    field('拒绝联系说明', dncInput, { help: '记录如何处理拒绝联系请求，便于内部审计。' }),
+  ]);
+  const savePolicyButton = button('保存合规策略', {
+    variant: 'primary',
+    iconName: 'shield',
+    disabled: !canManage,
+    title: disabledTip('settings.manage'),
+    onClick: async () => {
+      savePolicyButton.disabled = true;
+      try {
+        await api.patch('/api/v1/settings', {
+          compliance: {
+            legalBasis: legalSelect.value,
+            includeUnsubscribe: checkedOf(unsubscribeBox),
+            doNotContactNote: dncInput.value.trim(),
+          },
+        });
+        toast('合规策略已保存', 'success');
+        reload();
+      } catch (error) {
+        toast(error?.message || '保存失败', 'error');
+        savePolicyButton.disabled = !canManage;
+      }
+    },
+  });
+  policyForm.appendChild(el('div', 'span-2 row', [savePolicyButton]));
+
+  const senderForm = el('div', 'form-grid page-form');
+  append(senderForm, [
     field('发件公司名称', companyInput, { help: '用于邮件页脚与身份识别。' }),
     field('公司地址', addressInput, { help: '欧盟电子营销规则通常要求可识别的发件人信息。' }),
     field('隐私政策链接', privacyInput, { help: '可选；填写时必须是 http(s) 地址。' }),
-    field('拒绝联系说明', dncInput, { help: '记录如何处理拒绝联系请求，便于内部审计。' }),
   ]);
-  const saveButton = button('保存合规设置', {
+  const saveSenderButton = button('保存发件人信息', {
     variant: 'primary',
     iconName: 'shield',
     disabled: !canManage,
@@ -1950,34 +2304,50 @@ async function renderComplianceSection(host) {
         privacyInput.focus();
         return;
       }
-      saveButton.disabled = true;
+      saveSenderButton.disabled = true;
       try {
         await api.patch('/api/v1/settings', {
           compliance: {
-            legalBasis: legalSelect.value,
-            includeUnsubscribe: checkedOf(unsubscribeBox),
             senderCompanyName: companyInput.value.trim(),
             senderAddress: addressInput.value.trim(),
             privacyUrl,
-            doNotContactNote: dncInput.value.trim(),
           },
         });
-        toast('合规设置已保存', 'success');
+        toast('发件人信息已保存', 'success');
         reload();
       } catch (error) {
         toast(error?.message || '保存失败', 'error');
-        saveButton.disabled = !canManage;
+        saveSenderButton.disabled = !canManage;
       }
     },
   });
-  form.appendChild(el('div', 'span-2 row', [saveButton]));
-  host.appendChild(
-    card({
-      title: '合规与发件人信息',
-      help: '涉及 GDPR 与欧盟电子营销规则（如 ePrivacy）。以上配置帮助满足透明度与退订要求，但不构成法律意见；请按目标市场法律与公司政策确认。',
-      body: form,
-    }),
+  senderForm.appendChild(el('div', 'span-2 row', [saveSenderButton]));
+
+  const tabs = subTabs(
+    'compliance',
+    [
+      {
+        key: 'policy',
+        label: '合规策略',
+        node: card({
+          title: '合规策略',
+          help: '涉及 GDPR 与欧盟电子营销规则（如 ePrivacy）。避免对个人邮箱做未经请求的营销，保留退订与拒绝联系记录；本配置不构成法律意见。',
+          body: policyForm,
+        }),
+      },
+      {
+        key: 'sender',
+        label: '发件人信息',
+        node: card({
+          title: '发件人信息',
+          help: '欧盟电子营销规则通常要求可识别的发件人身份与地址；信息会用于邮件页脚与隐私政策链接。',
+          body: senderForm,
+        }),
+      },
+    ],
+    'policy',
   );
+  host.appendChild(tabs.node);
   if (!canManage) host.appendChild(permissionNotice('settings.manage', '修改合规设置'));
 }
 
@@ -2207,7 +2577,6 @@ async function renderUsageSection(host) {
   });
   append(toolbarRow, [
     daySelect,
-    metricSeg,
     el('span', 'grow'),
     helpTip('数据来源：usage_records 与 agent_executions，按天聚合；成本为按 Provider 单价的估算值。'),
   ]);
@@ -2270,19 +2639,22 @@ async function renderUsageSection(host) {
         help: '按 Provider 定价估算的成本，仅供参考；模拟模型成本为 0。',
       }),
     );
-    bodyHost.appendChild(statGrid);
+    const overviewCard = card({
+      title: '用量总览',
+      help: '近一段时间内 AI Token、邮件发送、Agent 执行与估算成本的总量。',
+      body: statGrid,
+    });
+    bodyHost.appendChild(overviewCard);
 
     trendHost = el('div', '');
-    bodyHost.appendChild(
-      card({
-        title: '用量趋势',
-        help: '按天聚合的用量走势，用于判断成本与发送节奏是否异常。',
-        body: trendHost,
-      }),
-    );
-    renderTrend();
+    const trendCard = card({
+      title: '用量趋势',
+      help: '按天聚合的用量走势，用于判断成本与发送节奏是否异常。',
+      actions: [metricSeg],
+      body: trendHost,
+    });
 
-    const tables = el('div', 'grid grid-2 page-usage-tables');
+    const tables = el('div', 'page-module-split');
     const byCategory = asArray(usage?.byCategory);
     const byAgent = asArray(usage?.byAgent);
     tables.appendChild(
@@ -2322,7 +2694,18 @@ async function renderUsageSection(host) {
         }),
       }),
     );
-    bodyHost.appendChild(tables);
+
+    const tabs = subTabs(
+      'usage',
+      [
+        { key: 'overview', label: '总览', node: overviewCard },
+        { key: 'trend', label: '趋势', node: trendCard },
+        { key: 'category', label: '分类明细', node: tables },
+      ],
+      'overview',
+    );
+    bodyHost.appendChild(tabs.node);
+    renderTrend();
   }
 
   function renderTrend() {
@@ -2508,46 +2891,45 @@ async function renderAuditSection(host) {
 
 async function renderSystemSection(host) {
   clear(host);
-  const systemHost = el('div', 'stack');
-  const licenseHost = el('div', 'stack');
-  const logsHost = el('div', 'stack');
-  append(host, [systemHost, licenseHost, logsHost]);
   const canOps = can('audit.read');
-  if (!canOps) {
-    host.insertBefore(
-      permissionNotice('audit.read', '查看系统状态与日志'),
-      host.firstChild,
-    );
+  const statusHost = el('div', 'stack');
+  const backupHost = el('div', 'stack');
+  const logsHost = el('div', 'stack');
+  const licenseHost = el('div', 'stack');
+  const items = [];
+  if (canOps) {
+    items.push({ key: 'status', label: '运行状态', node: statusHost });
+    items.push({ key: 'backup', label: '数据库备份', node: backupHost });
+    items.push({ key: 'logs', label: '系统日志', node: logsHost });
   }
+  items.push({ key: 'license', label: '许可证与依赖', node: licenseHost });
+  const tabs = subTabs('system', items, canOps ? 'status' : 'license');
+  host.appendChild(tabs.node);
+  if (!canOps) host.appendChild(permissionNotice('audit.read', '查看系统状态与日志'));
   await Promise.all([
-    canOps ? loadSystem(systemHost) : Promise.resolve(systemHost.appendChild(emptyCardForNoPermission('audit.read'))),
+    canOps ? loadSystem({ statusHost, backupHost }) : Promise.resolve(),
     loadLicense(licenseHost),
     canOps ? loadLogs(logsHost) : Promise.resolve(),
   ]);
 }
 
-function emptyCardForNoPermission(capability) {
-  return card({
-    body: emptyState({
-      iconName: 'lock',
-      title: '无权查看系统状态',
-      description: `需要 ${capability} 权限（管理员或拥有者）。`,
-    }),
-  });
-}
-
-async function loadSystem(systemHost) {
-  clear(systemHost);
-  systemHost.appendChild(loadingBlock('正在读取系统状态…'));
+async function loadSystem({ statusHost, backupHost }) {
+  clear(statusHost);
+  clear(backupHost);
+  statusHost.appendChild(loadingBlock('正在读取系统状态…'));
+  backupHost.appendChild(loadingBlock('正在读取备份列表…'));
   let data;
   try {
     data = await api.get('/api/v1/ops/system');
   } catch (error) {
-    clear(systemHost);
-    systemHost.appendChild(errorCard(error, () => loadSystem(systemHost)));
+    clear(statusHost);
+    clear(backupHost);
+    statusHost.appendChild(errorCard(error, () => loadSystem({ statusHost, backupHost })));
+    backupHost.appendChild(errorCard(error, () => loadSystem({ statusHost, backupHost })));
     return;
   }
-  clear(systemHost);
+  clear(statusHost);
+  clear(backupHost);
   const app = asObject(data?.app);
   const processInfo = asObject(data?.process);
   const storage = asObject(data?.storage);
@@ -2561,11 +2943,11 @@ async function loadSystem(systemHost) {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => ({ label: workerLabel(key), value: typeof value === 'boolean' ? badge(value ? '是' : '否', value ? 'green' : 'gray') : String(value) }));
 
-  systemHost.appendChild(
+  statusHost.appendChild(
     card({
       title: '运行状态',
       help: '运行时长、内存与数据库大小用于判断实例健康；版本信息来自服务端构建元数据。',
-      actions: [button('刷新', { variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => loadSystem(systemHost) })],
+      actions: [button('刷新', { variant: 'ghost', size: 'sm', iconName: 'refresh', onClick: () => loadSystem({ statusHost, backupHost }) })],
       body: el('div', 'stack', [
         factGrid([
           { label: '应用', value: app.nameZh || app.name || '—' },
@@ -2635,7 +3017,7 @@ async function loadSystem(systemHost) {
         const result = await api.post('/api/v1/ops/backup', {});
         const name = result?.backup?.name || result?.name || '备份';
         toast(`备份已创建：${name}`, 'success');
-        await loadSystem(systemHost);
+        await loadSystem({ statusHost, backupHost });
       } catch (error) {
         toast(error?.message || '备份失败', 'error');
         backupButton.disabled = !canBackup;
@@ -2643,7 +3025,7 @@ async function loadSystem(systemHost) {
     },
   });
 
-  systemHost.appendChild(
+  backupHost.appendChild(
     card({
       title: '数据库备份',
       help: '备份文件保存在服务端 data/backups 目录。建议在批量发送或数据迁移前创建备份；下载使用当前登录会话，不会把令牌写入 URL，且需要 backup.run 权限。',

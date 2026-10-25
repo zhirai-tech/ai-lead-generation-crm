@@ -30,8 +30,11 @@ let companyId;
 before(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zhirai-verification-'));
   setSecretForTests(randomBytes(48));
-  const db = openDatabase(path.join(dir, 'test.sqlite'));
-  migrate(db, path.join(baseConfig.rootDir, 'server', 'db', 'migrations'));
+  const dbFile = path.join(dir, 'test.sqlite');
+  const db = openDatabase(dbFile);
+  const migrationsDir = path.join(baseConfig.rootDir, 'server', 'db', 'migrations');
+  const allowlist = fs.readdirSync(migrationsDir).filter((name) => name.endsWith('.sql')).sort();
+  migrate(db, migrationsDir, { allowlist, expectedDbPath: dbFile, actualDbPath: dbFile });
   const bootstrap = bootstrapTestWorkspace({ email: 'unit-verify@test.local' });
   workspaceId = bootstrap.workspace.id;
   actorId = bootstrap.user.id;

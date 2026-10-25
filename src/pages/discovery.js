@@ -36,7 +36,7 @@ import { EU_COUNTRIES, splitList, typeLabel } from './companies.js';
 
 export const meta = {
   title: '企业发现',
-  help: '按产品、ICP、目标国家与关键词搜索潜在买家。关键词可由产品资料自动带出或 AI 生成；不选国家表示全部市场。每个结果都会记录数据来源、获取时间与置信度；内置模拟数据源仅用于演示流程，不代表真实企业。',
+  help: '企业发现只负责找到并去重企业（潜在客户）；下一步在「邮件草稿」生成每个客户的文案与附件，再人工审批、发送。「联系人库」保存所有企业的联系人。默认使用 OpenStreetMap 真实企业数据；不选国家=全部市场。',
 };
 
 const RUN_STATUS_MAP = {
@@ -48,6 +48,11 @@ const RUN_STATUS_MAP = {
 };
 
 const PROVIDER_LABELS = {
+  brave: 'Brave Search API',
+  serper: 'Serper（Google 结果）',
+  tavily: 'Tavily（免注册）',
+  browser: '浏览器搜索（本机 Edge/Chrome）',
+  osm: 'OpenStreetMap 真实企业',
   simulation: '内置模拟数据源',
   search_api: '可配置搜索 API',
   csv: 'CSV / 表格导入',
@@ -56,12 +61,12 @@ const PROVIDER_LABELS = {
 };
 
 const FALLBACK_PROVIDER = {
-  key: 'simulation',
-  name: '内置模拟数据源',
-  adapter: 'simulation',
+  key: 'osm',
+  name: 'OpenStreetMap 真实企业（免费）',
+  adapter: 'osm',
   isEnabled: true,
   implemented: true,
-  offline: true,
+  offline: false,
   costModel: '免费',
   capabilities: ['search', 'offline'],
 };
@@ -103,7 +108,7 @@ function fillSelect(node, options, value, placeholder = null) {
 
 function providerValue(provider) {
   const adapter = String(provider.adapter || provider.key || '');
-  if (['simulation', 'search_api', 'csv'].includes(adapter)) return adapter;
+  if (['brave', 'serper', 'tavily', 'browser', 'osm', 'simulation', 'search_api', 'csv'].includes(adapter)) return adapter;
   return provider.key || adapter;
 }
 
@@ -159,14 +164,25 @@ export async function render(root, params, ctx) {
   const formHost = el('div', 'stack');
   const runsHost = el('div', 'stack');
   const runsPagerHost = el('div', '');
+  const runsBody = el('div', 'stack hidden');
+  let runsExpanded = false;
+  let countryExpanded = false;
+  let providerExpanded = false;
+  const consoleHost = el('div', 'agent-console');
+  const consoleStatus = el('div', 'agent-console-status', '空闲');
+  const consoleLog = el('div', 'agent-console-log');
+  let consoleTimer = null;
+  let activeRunId = null;
+  let lastProgressMessage = '';
   const writable = can('discovery.run');
   const canWriteData = can('data.write');
 
   // ------------------------------------------------------- reference data
-  const PROVIDER_PREFERENCE = ['simulation', 'search_api', 'csv'];
+  const PROVIDER_PREFERENCE = ['browser', 'tavily', 'brave', 'serper', 'osm', 'search_api', 'csv'];
 
   function providerDisabledReason(provider) {
     if (provider.implemented === false) return '暂未实现';
+    if (['brave', 'serper', 'tavily'].includes(provider.key) && provider.hasCredential === false) return '需配置 API Key';
     if (provider.key === 'search_api' && provider.hasCredential === false) return '需配置 API Key';
     if (provider.isEnabled === false) {
       return provider.key === 'search_api' ? '需配置 API Key' : '未启用';
@@ -193,8 +209,7 @@ export async function render(root, params, ctx) {
   function renderProviders() {
     if (!refs.providerHost) return;
     clear(refs.providerHost);
-    for (const provider of state.providers) {
-      const value = providerValue(provider);
+    for (const provider of state.providers) {      const value = providerValue(provider);
       const disabledReason = providerDisabledReason(provider);
       const disabled = Boolean(disabledReason);
       const label = el('label', `page-provider${disabled ? ' disabled' : ''}`);
@@ -225,6 +240,16 @@ export async function render(root, params, ctx) {
       append(label, [radio, main, badges]);
       refs.providerHost.appendChild(label);
     }
+    refs.providerHost.classList.toggle('is-collapsed', !providerExpanded);
+    const selected = state.providers.find((provider) => providerValue(provider) === state.provider);
+    if (refs.providerSummary) {
+      refs.providerSummary.textContent = selected
+        ? `当前：${selected.name || selected.key}`
+        : '未选择数据源';
+    }
+    if (refs.providerToggle) {
+      refs.providerToggle.textContent = providerExpanded ? '收起数据源 ▲' : '展开数据源 ▼';
+    }
   }
 
   function updateCsvField() {
@@ -250,9 +275,13 @@ export async function render(root, params, ctx) {
       });
       refs.countryHost.appendChild(chip);
     }
+    if (refs.countryHost) refs.countryHost.classList.toggle('is-collapsed', !countryExpanded);
     const count = state.countries.size;
     if (refs.countryCount) {
       refs.countryCount.textContent = count ? `已选 ${count} 个国家` : '未选择国家';
+    }
+    if (refs.countryToggle) {
+      refs.countryToggle.textContent = countryExpanded ? '收起国家列表 ▲' : '展开国家列表 ▼';
     }
     if (refs.countryAllBadge) refs.countryAllBadge.classList.toggle('hidden', count > 0);
   }
@@ -430,12 +459,33 @@ export async function render(root, params, ctx) {
       help: '可多选；不选任何国家表示「全部市场」（由数据源覆盖范围决定）。可用「全选欧洲 / 随机 8 国 / 清空」快速调整。',
     });
     const countryMeta = el('div', 'page-chip-meta');
-    append(countryMeta, [refs.countryCount, refs.countryAllBadge, el('span', 'grow'), buildCountryActions()]);
+    refs.countryToggle = button('展开国家列表 ▼', {
+      size: 'sm',
+      variant: 'ghost',
+      onClick: () => {
+        countryExpanded = !countryExpanded;
+        renderCountryChips();
+      },
+    });
+    append(countryMeta, [refs.countryCount, refs.countryAllBadge, el('span', 'grow'), refs.countryToggle, buildCountryActions()]);
     const countryWrap = el('div', 'span-2');
     append(countryWrap, [countryField, countryMeta]);
 
-    const providerField = field('数据源', refs.providerHost, {
-      help: '数据源决定企业来源与成本。内置模拟数据源仅用于演示流程，不代表真实企业；禁用项需先在「系统设置 → 数据源」启用并配置凭据。',
+    refs.providerSummary = el('span', 'muted', '未选择数据源');
+    refs.providerToggle = button('展开数据源 ▼', {
+      size: 'sm',
+      variant: 'ghost',
+      onClick: () => {
+        providerExpanded = !providerExpanded;
+        renderProviders();
+      },
+    });
+    const providerMeta = el('div', 'page-chip-meta');
+    append(providerMeta, [refs.providerSummary, el('span', 'grow'), refs.providerToggle]);
+    const providerWrap = el('div', 'span-2');
+    append(providerWrap, [providerMeta, refs.providerHost]);
+    const providerField = field('数据源', providerWrap, {
+      help: '数据源决定企业来源与成本。展开后选择；默认收起，只显示当前数据源。',
     });
     providerField.classList.add('span-2');
 
@@ -455,19 +505,9 @@ export async function render(root, params, ctx) {
       refs.csvField,
     ]);
 
-    const submitLabel = el('span', '', '开始发现');
-    const submitBtn = button(null, {
-      variant: 'primary',
-      iconName: 'play',
-      disabled: !writable || !state.products.length,
-      onClick: submit,
-    });
-    submitBtn.appendChild(submitLabel);
-
     const foot = el('div', 'row-between');
     append(foot, [
       helpTip('提交后任务立即入队，结果企业会自动去重并记录来源；发现过程在后台执行，可在下方运行记录中查看状态。'),
-      submitBtn,
     ]);
 
     formHost.appendChild(
@@ -478,6 +518,7 @@ export async function render(root, params, ctx) {
         foot,
       }),
     );
+    headerSubmitBtn.disabled = !writable || !state.products.length;
     if (!state.products.length) {
       const actions = el('div', 'row page-empty-actions');
       append(actions, [
@@ -532,19 +573,19 @@ export async function render(root, params, ctx) {
       }
       payload.csvText = csv;
     }
-    const submitBtn = formHost.querySelector('.card-foot .btn:last-child');
-    if (submitBtn) submitBtn.disabled = true;
+    headerSubmitBtn.disabled = true;
     try {
       const result = await api.post('/api/v1/discovery/runs', payload);
       const queued = !(result && result.job && result.job.queued === false);
       toast(queued ? '发现任务已创建并排队执行' : '发现任务已创建', 'success');
       if (refs.csvText) refs.csvText.value = '';
+      if (result?.id) startConsole(result.id);
       state.page = 1;
       loadRuns();
     } catch (error) {
       toast(errorMessage(error), 'error');
     } finally {
-      if (submitBtn) submitBtn.disabled = false;
+      headerSubmitBtn.disabled = !writable || !state.products.length;
     }
   }
 
@@ -791,20 +832,100 @@ export async function render(root, params, ctx) {
     }
   }
 
+  function appendConsole(text, tone = '') {
+    const line = el('div', `agent-console-line ${tone}`.trim(), text);
+    consoleLog.appendChild(line);
+    while (consoleLog.childElementCount > 80) consoleLog.removeChild(consoleLog.firstElementChild);
+    consoleLog.scrollTop = consoleLog.scrollHeight;
+  }
+
+  function stopConsole(statusText = '空闲') {
+    if (consoleTimer) {
+      clearTimeout(consoleTimer);
+      consoleTimer = null;
+    }
+    consoleStatus.textContent = statusText;
+  }
+
+  async function pollConsole() {
+    if (!activeRunId || disposed) return;
+    try {
+      const data = await api.get(`/api/v1/discovery/runs/${encodeURIComponent(activeRunId)}/progress`);
+      const progress = data?.progress;
+      if (progress) {
+        if (progress.message && progress.message !== lastProgressMessage) {
+          lastProgressMessage = progress.message;
+          appendConsole(
+            `${new Date().toLocaleTimeString('zh-CN')}  ${progress.message}${progress.total ? `  (${progress.checked || 0}/${progress.total})` : ''}`,
+            progress.stage === 'failed' ? 'danger' : progress.stage === 'completed' ? 'success' : '',
+          );
+        }
+        consoleStatus.textContent = progress.stage === 'completed'
+          ? `完成：新建/恢复 ${progress.created || 0} 家`
+          : progress.stage === 'failed'
+            ? '失败'
+            : `${progress.message || '运行中'} ${progress.total ? `${progress.checked || 0}/${progress.total}` : ''}`;
+        if (['completed', 'failed'].includes(progress.stage)) {
+          stopConsole(consoleStatus.textContent);
+          activeRunId = null;
+          return;
+        }
+      }
+      consoleTimer = setTimeout(pollConsole, 1000);
+    } catch {
+      consoleTimer = setTimeout(pollConsole, 2000);
+    }
+  }
+
+  function startConsole(runId) {
+    activeRunId = runId;
+    lastProgressMessage = '';
+    clear(consoleLog);
+    consoleStatus.textContent = '任务已提交，等待后台执行…';
+    appendConsole('任务已提交，等待 worker 接单…');
+    if (consoleTimer) clearTimeout(consoleTimer);
+    consoleTimer = setTimeout(pollConsole, 500);
+  }
+
   // ------------------------------------------------------------------ boot
   const refreshBtn = button('刷新', { iconName: 'refresh', onClick: () => loadRuns() });
+  const headerSubmitBtn = button('开始发现', {
+    variant: 'primary',
+    iconName: 'play',
+    disabled: !writable || !state.products.length,
+    onClick: () => submit(),
+  });
+  const workbench = el('div', 'page-discovery-workbench');
+  append(consoleHost, [consoleStatus, consoleLog]);
+  const consoleCard = card({
+    title: 'Agent 运行窗口',
+    help: '显示当前发现任务正在做什么、检查到第几条、已创建多少企业。',
+    body: consoleHost,
+  });
+  append(workbench, [formHost, consoleCard]);
+  append(runsBody, [runsHost, runsPagerHost]);
+  const runsToggle = button('展开运行记录 ▼', {
+    size: 'sm',
+    variant: 'ghost',
+    onClick: () => {
+      runsExpanded = !runsExpanded;
+      runsBody.classList.toggle('hidden', !runsExpanded);
+      runsToggle.textContent = runsExpanded ? '收起运行记录 ▲' : '展开运行记录 ▼';
+      if (runsExpanded) loadRuns();
+    },
+  });
   append(root, [
-    pageHeader({ title: meta.title, help: meta.help, actions: [refreshBtn] }),
-    formHost,
+    pageHeader({ title: meta.title, help: meta.help, actions: [headerSubmitBtn, refreshBtn] }),
+    workbench,
     card({
       title: '运行记录',
-      help: '每次发现都会记录查询条件、数据源、状态与结果数量。点击任意行查看详情与结果企业。',
-      body: el('div', 'stack', [runsHost, runsPagerHost]),
+      help: '默认收起，展开后查看历史任务。',
+      body: el('div', 'stack', [runsToggle, runsBody]),
     }),
   ]);
 
   formHost.appendChild(card({ title: '新建发现任务', body: loadingBlock('正在加载产品、ICP 与数据源…') }));
-  const runsPromise = loadRuns();
+  const runsPromise = Promise.resolve();
 
   try {
     const [productsResult, icpsResult, providersResult] = await Promise.allSettled([
@@ -822,7 +943,9 @@ export async function render(root, params, ctx) {
       }
     }
     if (icpsResult.status === 'fulfilled') state.icps = unwrapList(icpsResult.value).items;
-    const providers = providersResult.status === 'fulfilled' ? unwrapList(providersResult.value).items : [];
+    const providers = providersResult.status === 'fulfilled'
+      ? unwrapList(providersResult.value).items.filter((provider) => providerValue(provider) !== 'simulation')
+      : [];
     let usedFallback = false;
     if (!providers.length) usedFallback = true;
     state.providers = providers.length ? providers : [FALLBACK_PROVIDER];
@@ -834,9 +957,9 @@ export async function render(root, params, ctx) {
       );
     }
     if (providersResult.status === 'rejected') {
-      formHost.appendChild(notice('数据源目录暂不可用，已使用内置模拟数据源。', 'info'));
+      formHost.appendChild(notice('数据源目录暂不可用，已使用 OpenStreetMap 真实企业数据源。', 'info'));
     } else if (usedFallback) {
-      formHost.appendChild(notice('未发现可用数据源，已使用内置模拟数据源。', 'info'));
+      formHost.appendChild(notice('未发现可用数据源，已使用 OpenStreetMap 真实企业数据源。', 'info'));
     }
   } catch (error) {
     if (disposed) return;

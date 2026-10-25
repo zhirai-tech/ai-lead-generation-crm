@@ -30,7 +30,7 @@ import {
 
 export const meta = {
   title: 'Agent 中心',
-  help: '查看各 Agent 角色、模型 Provider 状态与执行记录。手动试运行会调用当前 Provider（模拟模式下为离线结果）并计入 Token 用量。',
+  help: '查看各 Agent 角色、模型 Provider 状态与执行记录。所有 Agent 共用系统设置中的同一个全局模型；如需更换模型，请前往「系统设置 → AI 模型」。手动试运行会调用当前模型（模拟模式下为离线结果）并计入 Token 用量。',
 };
 
 const PROVIDER_LABELS = {
@@ -83,6 +83,7 @@ export async function render(root) {
     pageHeader({
       title: 'Agent 中心',
       help: meta.help,
+      subtitle: '所有 Agent 共用系统设置中的同一个全局模型；修改模型只需前往「系统设置 → AI 模型」。',
       actions: [
         button('刷新', {
           iconName: 'refresh',

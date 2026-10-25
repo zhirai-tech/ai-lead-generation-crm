@@ -62,6 +62,18 @@ loadDotEnv(path.join(ROOT_DIR, '.env'));
 const dataDir = path.resolve(ROOT_DIR, env('DATA_DIR', 'server/data'));
 const publicBaseUrl = env('PUBLIC_BASE_URL', `http://127.0.0.1:${intEnv('PORT', 4173)}`).replace(/\/+$/, '');
 
+// Migration gate: an unset allowlist is not the same as an explicit empty list.
+// Unset means the operator did not state which migrations are approved, so the
+// process must fail before applying any migration. An explicitly empty list
+// means "approve no pending migrations".
+const rawMigrationAllowlist = process.env.MIGRATION_ALLOWLIST;
+const normalizedMigrationAllowlist = rawMigrationAllowlist === undefined ? null : rawMigrationAllowlist.trim();
+const migrationAllowlist = normalizedMigrationAllowlist === null
+  ? null
+  : normalizedMigrationAllowlist === '' || normalizedMigrationAllowlist.toLowerCase() === 'none'
+    ? []
+    : normalizedMigrationAllowlist.split(',').map((item) => item.trim()).filter(Boolean);
+
 export const config = Object.freeze({
   env: env('NODE_ENV', 'development'),
   isProduction: env('NODE_ENV', 'development') === 'production',
@@ -84,6 +96,13 @@ export const config = Object.freeze({
     pollMs: intEnv('WORKER_POLL_MS', 1000, { min: 100, max: 60000 }),
   },
   globalSendPaused: boolEnv('GLOBAL_SEND_PAUSED', false),
+  migrations: Object.freeze({
+    allowlist: migrationAllowlist,
+    expectedDbPath: process.env.MIGRATION_EXPECTED_DB_PATH?.trim() || null,
+  }),
+  features: Object.freeze({
+    agentLoop: boolEnv('AGENT_LOOP_ENABLED', false),
+  }),
   aiFallback: {
     provider: env('AI_PROVIDER', ''),
     baseUrl: env('AI_BASE_URL', ''),

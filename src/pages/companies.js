@@ -15,6 +15,8 @@ import {
   badge,
   button,
   checkbox,
+  confirmDialog,
+  copyButton,
   dataTable,
   emptyState,
   field,
@@ -33,10 +35,79 @@ import {
   toolbar,
 } from '../components/ui.mjs';
 
+function maskContact(value, kind = 'email') {
+  const text = String(value || '');
+  if (kind === 'phone') {
+    const digits = text.replace(/\D/g, '');
+    if (digits.length < 6) return text;
+    return `${text.slice(0, Math.min(6, Math.ceil(text.length / 2)))}****${text.slice(-4)}`;
+  }
+  const [local, domain] = text.split('@');
+  if (!local || !domain) return text;
+  return `${local.slice(0, 2)}****@${domain}`;
+}
+
+async function openContactDialog(company, kind) {
+  const data = await api.get(`/api/v1/contacts${queryString({ companyId: company.id, pageSize: 100 })}`);
+  const contacts = data?.items || [];
+  const emails = [...new Set(contacts.map((item) => item.email).filter(Boolean))];
+  const phones = [...new Set([
+    ...contacts.map((item) => item.phone).filter(Boolean),
+    company.phone,
+  ].filter(Boolean))];
+  const values = kind === 'email' ? emails : phones;
+  const title = `${company.name || '企业'} · ${kind === 'email' ? '邮箱' : '电话'}`;
+  const body = el('div', 'contact-dialog-list');
+  if (!values.length) {
+    body.appendChild(el('div', 'muted', kind === 'email' ? '未识别到可用邮箱' : '未识别到可用电话'));
+  }
+  for (const value of values) {
+    const row = el('div', 'contact-dialog-row');
+    const label = el('span', 'contact-dialog-value', maskContact(value, kind));
+    row.appendChild(label);
+    row.appendChild(copyButton(value, kind === 'email' ? '复制邮箱' : '复制电话'));
+    if (kind === 'email') {
+      row.appendChild(button('查看完整', {
+        size: 'sm',
+        variant: 'ghost',
+        onClick: () => { label.textContent = value; },
+      }));
+      row.appendChild(button('写邮件', {
+        size: 'sm',
+        variant: 'primary',
+        onClick: async () => {
+          const confirmed = await confirmDialog({
+            title: '发送邮件',
+            message: `是否给 ${value} 发送邮件？`,
+            confirmText: '打开邮件',
+            cancelText: '取消',
+          });
+          if (confirmed) window.location.href = `mailto:${value}`;
+        },
+      }));
+    } else {
+      row.appendChild(button('查看完整', {
+        size: 'sm',
+        variant: 'ghost',
+        onClick: () => { label.textContent = value; },
+      }));
+      row.appendChild(button('拨打', {
+        size: 'sm',
+        variant: 'primary',
+        onClick: () => { window.location.href = `tel:${value.replace(/[^\d+]/g, '')}`; },
+      }));
+    }
+    body.appendChild(row);
+  }
+  openModal({ title, body, size: 'sm' });
+}
+
 export const meta = {
   title: '潜在客户',
   help: '所有企业的统一主记录。支持按国家、状态与评分筛选，评分由规则引擎基于产品资料和 ICP 计算，可追溯、可解释。',
 };
+
+
 
 const PAGE_SIZE = 25;
 
@@ -244,8 +315,8 @@ export async function pickProduct({ title = '选择产品', confirmText = '确�
               return;
             }
             const product = products.find((item) => item.id === productId) || null;
-            done();
             finish({ productId, product });
+            done();
           },
         },
       ],
@@ -378,6 +449,8 @@ export async function render(root, params, ctx) {
     country: '',
     status: '',
     minScore: '',
+    hasEmail: null,
+    contactLevel: '',
     items: [],
     total: 0,
     selected: new Set(),
@@ -389,7 +462,7 @@ export async function render(root, params, ctx) {
   const writable = can('data.write');
 
   function renderEmpty() {
-    const filtered = Boolean(state.q || state.country || state.status || state.minScore);
+    const filtered = Boolean(state.q || state.country || state.status || state.minScore || state.hasEmail !== null || state.contactLevel);
     if (filtered) {
       return emptyState({
         iconName: 'search',
@@ -426,14 +499,8 @@ export async function render(root, params, ctx) {
       },
       {
         key: 'name',
-        label: '企业',
-        render: (row) => {
-          const wrap = el('div', '');
-          append(wrap, [el('div', 'cell-main', row.name || '未命名企业')]);
-          const site = row.domain || row.website || '';
-          append(wrap, [el('div', 'cell-sub', site ? domainOf(site) : '未填写域名')]);
-          return wrap;
-        },
+        label: '企业名称',
+        render: (row) => el('span', 'cell-main', row.name || '未命名企业'),
       },
       {
         key: 'country',
@@ -441,9 +508,74 @@ export async function render(root, params, ctx) {
         render: (row) => (row.country ? countryName(row.country) : '—'),
       },
       {
-        key: 'companyType',
-        label: '类型',
-        render: (row) => typeLabel(row.companyType),
+        key: 'category',
+        label: '分类',
+        render: (row) => {
+          const type = row.companyType ? typeLabel(row.companyType) : '';
+          const industry = row.industry || '';
+          return el('div', '', [
+            el('span', '', type || industry || '—'),
+            type && industry && industry !== type ? el('div', 'cell-sub', industry) : null,
+          ].filter(Boolean));
+        },
+      },
+      {
+        key: 'website',
+        label: '网址',
+        render: (row) => {
+          const raw = row.website || row.domain || '';
+          if (!raw) return '—';
+          const href = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+          const link = el('a', 'cell-main', domainOf(raw));
+          link.href = href;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.addEventListener('click', (event) => event.stopPropagation());
+          return link;
+        },
+      },
+      {
+        key: 'status',
+        label: '状态',
+        render: (row) => {
+          const stageLabels = {
+            discovered: '发现池',
+            new_lead: '新线索',
+            potential: '潜在客户',
+            contacted: '已联系',
+            intent: '意向客户',
+            qualified: '已合格',
+            customer: '确认客户',
+            excluded: '已排除',
+          };
+          const tones = {
+            discovered: 'gray',
+            new_lead: 'gray',
+            potential: 'blue',
+            contacted: 'yellow',
+            intent: 'green',
+            qualified: 'green',
+            customer: 'green',
+            excluded: 'red',
+          };
+          return badge(stageLabels[row.leadStage] || row.status || '—', tones[row.leadStage] || 'gray');
+        },
+      },
+      {
+        key: 'contactCompleteness',
+        label: '联系方式',
+        render: (row) => {
+          const emailCount = Number(row.emailCount ?? 0);
+          const phoneCount = row.phone ? 1 : 0;
+          const wrap = el('div', 'row contact-actions');
+          wrap.appendChild(emailCount > 0
+            ? button(`邮箱 ${emailCount}`, { size: 'sm', variant: 'ghost', onClick: () => openContactDialog(row, 'email') })
+            : el('span', 'muted', '无邮箱'));
+          wrap.appendChild(phoneCount > 0
+            ? button(`电话 ${phoneCount}`, { size: 'sm', variant: 'ghost', onClick: () => openContactDialog(row, 'phone') })
+            : el('span', 'muted', '无电话'));
+          return wrap;
+        },
       },
       {
         key: 'score',
@@ -458,23 +590,6 @@ export async function render(root, params, ctx) {
         },
       },
       {
-        key: 'status',
-        label: '状态',
-        render: (row) => statusBadge(row.status, 'company'),
-      },
-      {
-        key: 'contacts',
-        label: '联系人/邮箱',
-        align: 'right',
-        render: (row) => `${formatNumber(row.contactsCount ?? 0)} / ${formatNumber(row.emailCount ?? 0)}`,
-      },
-      {
-        key: 'activity',
-        label: '最近活动',
-        render: (row) =>
-          el('span', 'muted', relativeTime(row.lastActivityAt || row.lastSourcedAt || row.updatedAt || row.createdAt)),
-      },
-      {
         key: 'actions',
         label: '操作',
         className: 'cell-actions',
@@ -487,12 +602,12 @@ export async function render(root, params, ctx) {
               iconName: 'eye',
               onClick: () => navigate(`/companies/${encodeURIComponent(row.id)}`),
             }),
-            button('评分', {
+            button('删除', {
               size: 'sm',
               variant: 'ghost',
-              iconName: 'zap',
-              disabled: !writable,
-              onClick: () => scoreOne(row),
+              iconName: 'trash',
+              disabled: !can('data.delete'),
+              onClick: () => deleteOne(row),
             }),
           ]);
           return wrap;
@@ -546,7 +661,49 @@ export async function render(root, params, ctx) {
         disabled: !writable,
         onClick: bulkScore,
       }),
+      button('批量补全', {
+        size: 'sm',
+        variant: 'outline',
+        iconName: 'search',
+        disabled: !can('discovery.run'),
+        onClick: bulkEnrich,
+      }),
+      button('批量写信', {
+        size: 'sm',
+        variant: 'outline',
+        iconName: 'mail',
+        disabled: !writable,
+        onClick: bulkDraft,
+      }),
+      button('批量删除', {
+        size: 'sm',
+        variant: 'danger',
+        iconName: 'trash',
+        disabled: !can('data.delete'),
+        onClick: bulkDelete,
+      }),
     ]);
+  }
+
+  async function bulkDelete() {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    const confirmed = await confirmDialog({
+      title: '批量删除企业',
+      message: `确认删除选中的 ${ids.length} 家企业？删除后它们会从潜在客户列表移除，但不会影响已发送的历史邮件。`,
+      confirmText: '确认删除',
+      cancelText: '取消',
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await api.post('/api/v1/companies/bulk', { action: 'delete', ids });
+      toast(`已删除 ${ids.length} 家企业`, 'success');
+      state.selected.clear();
+      load();
+    } catch (error) {
+      toast(errorMessage(error), 'error');
+    }
   }
 
   function toggleSelection(id, checked) {
@@ -585,6 +742,8 @@ export async function render(root, params, ctx) {
           country: state.country,
           status: state.status,
           minScore: state.minScore,
+          hasEmail: state.hasEmail,
+          contactLevel: state.contactLevel,
         })}`,
       );
       if (disposed) return;
@@ -602,6 +761,25 @@ export async function render(root, params, ctx) {
       state.items = [];
       state.total = 0;
       renderPagination();
+    }
+  }
+
+  async function deleteOne(row) {
+    const confirmed = await confirmDialog({
+      title: '删除企业',
+      message: `确认删除「${row.name || '该企业'}」？删除后会从潜在客户列表移除，但不会删除已发送的历史邮件。`,
+      confirmText: '确认删除',
+      cancelText: '取消',
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await api.delete(`/api/v1/companies/${encodeURIComponent(row.id)}`);
+      toast('企业已删除', 'success');
+      state.selected.delete(row.id);
+      load();
+    } catch (error) {
+      toast(errorMessage(error), 'error');
     }
   }
 
@@ -633,6 +811,49 @@ export async function render(root, params, ctx) {
       });
       const updated = result && result.updated !== undefined ? result.updated : ids.length;
       toast(`已提交 ${updated} 家企业的评分`, 'success');
+      state.selected.clear();
+      updateBatchBar();
+      load();
+    } catch (error) {
+      toast(errorMessage(error), 'error');
+    }
+  }
+
+  async function bulkEnrich() {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    const confirmed = await confirmDialog({
+      title: '批量补全联系方式',
+      message: `将依次打开选中的 ${ids.length} 家企业官网，补全邮箱、电话和社交链接。网站较多时会比较慢，是否继续？`,
+      confirmText: '开始补全',
+      cancelText: '取消',
+    });
+    if (!confirmed) return;
+    try {
+      const result = await api.post('/api/v1/companies/bulk', { action: 'enrich', ids });
+      const updated = result?.updated ?? 0;
+      toast(`已补全 ${updated} 家企业，刷新查看邮箱/电话`, 'success');
+      state.selected.clear();
+      updateBatchBar();
+      load();
+    } catch (error) {
+      toast(errorMessage(error), 'error');
+    }
+  }
+
+  async function bulkDraft() {
+    const ids = [...state.selected];
+    if (!ids.length) return;
+    const confirmed = await confirmDialog({
+      title: '批量生成开发信',
+      message: `将为选中的 ${ids.length} 家企业生成开发信草稿。只有有邮箱的企业会生成，生成后需人工审批才能发送。`,
+      confirmText: '开始生成',
+      cancelText: '取消',
+    });
+    if (!confirmed) return;
+    try {
+      const result = await api.post('/api/v1/companies/bulk', { action: 'draft', ids });
+      toast(`已生成 ${result?.updated ?? 0} 封草稿，请到「邮件草稿」检查`, 'success');
       state.selected.clear();
       updateBatchBar();
       load();
@@ -755,6 +976,8 @@ export async function render(root, params, ctx) {
           country: state.country,
           status: state.status,
           minScore: state.minScore,
+          hasEmail: state.hasEmail,
+          contactLevel: state.contactLevel,
         })}`,
       );
       const content = typeof data === 'string' ? data : data && data.content;
@@ -787,6 +1010,38 @@ export async function render(root, params, ctx) {
     disabled: !can('import.run'),
     onClick: openImportModal,
   });
+  const cleanupBtn = button('剔除无联系方式', {
+    iconName: 'trash',
+    variant: 'outline',
+    disabled: !can('data.delete'),
+    onClick: cleanupNoEmail,
+  });
+
+  async function cleanupNoEmail() {
+    try {
+      const data = await api.get('/api/v1/companies?hasEmail=false&pageSize=100');
+      const { items } = unwrapList(data);
+      const ids = items.map((item) => item.id);
+      if (!ids.length) {
+        toast('没有需要剔除的无联系方式企业', 'info');
+        return;
+      }
+      const confirmed = await confirmDialog({
+        title: '剔除无联系方式企业',
+        message: `找到 ${ids.length} 家没有有效邮箱的企业。确认从潜在客户列表删除？`,
+        confirmText: '确认剔除',
+        cancelText: '取消',
+        danger: true,
+      });
+      if (!confirmed) return;
+      await api.post('/api/v1/companies/bulk', { action: 'delete', ids });
+      toast(`已剔除 ${ids.length} 家无联系方式企业`, 'success');
+      state.selected.clear();
+      load();
+    } catch (error) {
+      toast(errorMessage(error), 'error');
+    }
+  }
 
   const searchNode = searchInput({
     placeholder: '搜索企业名称 / 域名 / 行业…',
@@ -842,13 +1097,46 @@ export async function render(root, params, ctx) {
     },
   });
 
+  const hasEmailSelect = select({
+    value: 'all',
+    options: [
+      { value: 'all', label: '全部联系方式' },
+      { value: 'with', label: '有邮箱' },
+      { value: 'without', label: '无邮箱' },
+    ],
+    className: 'select filter-select',
+    onChange: (value) => {
+      state.hasEmail = value === 'with' ? true : value === 'without' ? false : null;
+      state.page = 1;
+      load();
+    },
+  });
+
+  const contactLevelSelect = select({
+    value: '',
+    options: [
+      { value: '', label: '全部联系方式等级' },
+      { value: 'A', label: 'A 完整' },
+      { value: 'B', label: 'B 较全' },
+      { value: 'C', label: 'C 部分' },
+      { value: 'D', label: 'D 仅官网' },
+      { value: 'none', label: '无官网' },
+    ],
+    className: 'select filter-select',
+    onChange: (value) => {
+      state.contactLevel = value;
+      state.page = 1;
+      load();
+    },
+  });
+
   append(root, [
     pageHeader({
       title: meta.title,
       help: meta.help,
-      actions: [refreshBtn, newBtn],
+      actions: [cleanupBtn, refreshBtn, newBtn],
     }),
-    toolbar(searchNode, countrySelect, statusSelect, minScoreSelect, el('span', 'grow'), importBtn, exportBtn),
+    toolbar(searchNode, countrySelect, statusSelect, minScoreSelect, hasEmailSelect, contactLevelSelect, el('span', 'grow'), importBtn, exportBtn),
     batchBar,
     tableHost,
     paginationHost,

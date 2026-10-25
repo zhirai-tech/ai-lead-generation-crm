@@ -130,12 +130,15 @@ test('PDF documents get signed public links that email recipients can open anony
   assert.ok([401, 404].includes(wrongProduct.status), 'authenticated file URL requires a session');
 
   const emailFiles = listProductFilesForEmail(workspaceId, productId);
-  assert.equal(emailFiles.length, 1);
-  assert.equal(emailFiles[0].productFileId, file.id);
-  assert.equal(emailFiles[0].mimeType, 'application/pdf');
-  assert.equal(emailFiles[0].filename, 'catalogue.pdf');
-  assert.match(emailFiles[0].publicUrl, /^\/api\/v1\/public\/product-files\//);
-  const reopened = await ctx.request('GET', emailFiles[0].publicUrl, { anonymous: true, raw: true });
+  assert.equal(emailFiles.length, 2);
+  const pdfEmailFile = emailFiles.find((item) => item.mimeType === 'application/pdf');
+  assert.equal(pdfEmailFile.productFileId, file.id);
+  assert.equal(pdfEmailFile.filename, 'catalogue.pdf');
+  assert.match(pdfEmailFile.publicUrl, /^\/api\/v1\/public\/product-files\//);
+  const imageEmailFile = emailFiles.find((item) => item.mimeType === 'image/png');
+  assert.ok(imageEmailFile, 'product images are included as direct attachments');
+  assert.equal(imageEmailFile.publicUrl, null);
+  const reopened = await ctx.request('GET', pdfEmailFile.publicUrl, { anonymous: true, raw: true });
   assert.equal(reopened.status, 200, 'contract publicUrl stays usable for email recipients');
   assert.deepEqual(
     listProductFiles(workspaceId, productId).map((item) => item.kind).sort(),
