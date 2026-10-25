@@ -94,7 +94,7 @@ export function buildShell({ container, onLogout }) {
   logo.width = 34;
   logo.height = 34;
   const brandText = el('span', 'brand-text');
-  append(brandText, [el('span', 'brand-name', 'ZHIRAI'), el('span', 'brand-sub', '欧洲 B2B 获客平台')]);
+  append(brandText, [el('span', 'brand-name', 'ZHIRAI'), el('span', 'brand-sub', 'AI 智能获客与销售管理')]);
   append(brand, [logo, brandText]);
 
   const nav = el('nav', 'nav');
@@ -256,7 +256,7 @@ export function buildShell({ container, onLogout }) {
       const help = docHelp(meta.help);
       helpSlot.appendChild(help);
     }
-    document.title = `${meta.title || '工作台'} · ZHIRAI 欧洲 B2B 获客平台`;
+    document.title = `${meta.title || '工作台'} · ZHIRAI AI 智能获客`;
     for (const [path, link] of links) {
       const active = meta.path ? meta.path === path : window.location.hash.replace(/^#/, '').split('?')[0] === path;
       link.classList.toggle('active', active);

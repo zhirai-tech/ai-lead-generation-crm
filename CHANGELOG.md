@@ -1,6 +1,6 @@
 # 更新日志（CHANGELOG）
 
-> 项目：ZHIRAI Europe B2B AI Outreach Platform（智睿欧洲 B2B AI 外贸获客平台）
+> 项目：AI Lead Generation & Outreach CRM（AI 智能获客与销售外联系统）
 > 格式参考 Keep a Changelog；版本号遵循语义化版本。
 > 品牌：`ZHIRAI · 智睿科技 · 独立开发者` ｜ `© 2026 智睿科技 保留所有权利。`
 
@@ -78,7 +78,7 @@
 - `docs/DATA-MODEL.md`：40 张表 ER、字段、唯一约束、索引、租户隔离、保留与迁移策略。
 - `docs/API.md` + `docs/openapi.yaml`：REST API 文档与 OpenAPI 描述。
 - `docs/SECURITY.md`：威胁模型、认证/CSRF/加密、多租户、发送与 Agent 安全、生产清单、已知限制。
-- `docs/COMPLIANCE.md`：GDPR 与欧洲电子营销落地（**非法律意见**）。
+- `docs/COMPLIANCE.md`：GDPR 与全球电子营销落地（**非法律意见**）。
 - `docs/DECISIONS.md`：13 条 ADR。
 - `docs/USER-GUIDE.md`：中文操作手册。
 - `docs/ROADMAP.md`：v1.0 → v1.x 计划与"不自动化承诺"。
@@ -134,11 +134,11 @@
 
 - **产品媒体**：产品主图上传（PNG/JPEG/WebP）与 PDF 资料上传；文件列表、设为主图、删除、登录态流式下载；文件存储在 `DATA_DIR/uploads/products/<workspaceId>/<productId>/`。
 - **公开 PDF 链接**：为 PDF 文档生成 HMAC 签名公开链接（`/api/v1/public/product-files/:token`，**180 天**有效，按租户/产品/文件校验）；收件人无需登录即可在邮件中打开 PDF。
-- **AI 关键词**：新增第 11 个 Agent 角色 `keyword_research`（`server/agents/prompts/keyword_research.md`）；`POST /products/:id/generate-keywords` 基于产品名称/分类/规格/应用/材料扩展英文 B2B 关键词、否定词与搜索式，保存到 `products.keywords_json`；Provider 不可用返回 503 `AGENT_UNAVAILABLE`，不伪造输出。
+- **AI 关键词**：新增第 11 个 Agent 角色 `keyword_research`（`server/agents/prompts/keyword_research.md`）；`POST /products/:id/generate-keywords` 基于产品名称/分类/规格/应用/材料扩展英文 business 关键词、否定词与搜索式，保存到 `products.keywords_json`；Provider 不可用返回 503 `AGENT_UNAVAILABLE`，不伪造输出。
 - **关键词编辑**：`PATCH /products/:id` 接受 `keywords[]`（≤30、每项 ≤80 字符、大小写不敏感去重）；产品列表/详情返回 `keywords/files/mainImageFileId/mainImageUrl`。
 - **开发信自动附件**：`outreach_writer` 提示词升级到 **v2**（支持 `productFiles[].publicUrl`）；生成草稿时自动选取最多 3 个产品 PDF 写入 `message_drafts.attachments_json`，并在正文（退订段之前）写公开链接；草稿详情返回 `attachments`。
 - **邮件附件发送**：MIME 构建支持 `multipart/mixed` 附件；单附件 ≤5 MB、总附件 ≤8 MB、MIME 层 ≤20 个；缺失/超限/类型不允许的附件跳过并记录 warning；发送成功把附件快照写入 `email_messages.attachments_json`。
-- **企业发现**：目标国家支持「全选欧洲 / 随机 8 国 / 清空」；**不选国家 = 全部市场**；选择产品后自动带出产品关键词，支持「AI 生成关键词」。
+- **企业发现**：目标国家支持「全选全球 / 随机 8 国 / 清空」；**不选国家 = 全部市场**；选择产品后自动带出产品关键词，支持「AI 生成关键词」。
 - **数据迁移**：`server/db/migrations/002_product_media_attachments.sql`（`products.keywords_json/main_image_file_id`、`product_files.kind`、`message_drafts.attachments_json`、`email_messages.attachments_json`），**全部为 `ALTER TABLE ADD COLUMN`，业务表数量不变（40；含迁移表 41）**。
 - **API**：新增 6 条产品文件/关键词路由 + 1 条公开文件路由，路由总数 **154 → 161**。
 

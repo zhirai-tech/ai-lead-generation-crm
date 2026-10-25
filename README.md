@@ -1,8 +1,8 @@
-# ZHIRAI Europe B2B AI Outreach Platform
+# AI Lead Generation & Outreach CRM
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> A self-hosted European B2B outreach workspace: product data → ICP → company discovery → explainable scoring → personalized drafts → human approval → email follow-up → reply classification → pipeline.
+> A self-hosted AI lead generation and sales CRM workspace: product data → ICP → company discovery → explainable scoring → personalized drafts → human approval → email follow-up → reply classification → pipeline.
 
 No automatic bulk sending by default. Desktop test builds ship with global sending paused.
 
@@ -18,7 +18,7 @@ No automatic bulk sending by default. Desktop test builds ship with global sendi
 
 ### Download
 
-[GitHub Releases](https://github.com/zhirai-tech/zhirai-europe-b2b-outreach/releases)
+[GitHub Releases](https://github.com/zhirai-tech/ai-lead-generation-crm/releases)
 
 - Windows Full: no Node.js required; extract and run `LAUNCH-ZHIRAI.bat`.
 - Windows Basic: requires Node.js 22.5+; extract and run `START-WINDOWS-BASIC.bat`.
@@ -77,8 +77,8 @@ Not yet fully validated: real-world company discovery, external search, website 
 - [Requirements](REQUIREMENTS.md)
 - [Contributing](CONTRIBUTING.md)
 - [Project rules](PROJECT_RULES.md)
-- [Desktop manual (PDF, Chinese language)](docs/manual/ZHIRAI-1.1.0-1025-桌面版操作手册.pdf)
-- [Desktop manual (Word, Chinese language)](docs/manual/ZHIRAI-1.1.0-1025-桌面版操作手册.docx)
+- [Chinese desktop manual (PDF)](docs/manual/ZHIRAI-AI-Lead-Generation-CRM-1.1.0-1025-Desktop-Manual-zh-CN.pdf)
+- [Chinese desktop manual (Word)](docs/manual/ZHIRAI-AI-Lead-Generation-CRM-1.1.0-1025-Desktop-Manual-zh-CN.docx)
 
 ### Roadmap
 

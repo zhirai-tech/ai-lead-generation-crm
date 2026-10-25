@@ -79,7 +79,7 @@ export const config = Object.freeze({
   isProduction: env('NODE_ENV', 'development') === 'production',
   rootDir: ROOT_DIR,
   version: readVersion(),
-  appName: env('APP_NAME', 'ZHIRAI Outreach'),
+  appName: env('APP_NAME', 'AI Lead Generation CRM'),
   host: env('HOST', '127.0.0.1'),
   port: intEnv('PORT', 4173, { min: 1, max: 65535 }),
   publicBaseUrl,

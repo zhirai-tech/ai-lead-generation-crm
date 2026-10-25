@@ -1,8 +1,8 @@
 {
-  "name": "zhirai-europe-b2b-outreach",
+  "name": "ai-lead-generation-crm",
   "version": "1.1.0-1025",
   "private": true,
-  "description": "ZHIRAI Europe B2B AI Outreach Platform - self-hosted B2B lead discovery, qualification, outreach and CRM.",
+  "description": "AI-powered lead generation, prospect discovery, explainable scoring, personalized outreach, email approval and sales CRM.",
   "type": "module",
   "main": "desktop/main.mjs",
   "engines": {

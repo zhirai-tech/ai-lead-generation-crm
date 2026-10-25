@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ZHIRAI Europe B2B AI Outreach Platform - server entry point.
+ * ZHIRAI AI Lead Generation & Outreach CRM - server entry point.
  *
  * Keeps the process single-node and dependency-free: HTTP API + static
  * frontend + background worker all run here. See DEPLOY.md.
@@ -65,8 +65,8 @@ async function main() {
   const url = `${config.publicBaseUrl}`;
   const initialized = hasUsers();
   console.log('');
-  console.log('  ZHIRAI Europe B2B AI Outreach Platform');
-  console.log(`  智睿科技 · 欧洲 B2B AI 外贸获客平台  v${config.version}`);
+  console.log('  ZHIRAI AI Lead Generation & Outreach CRM');
+  console.log(`  AI 智能获客与销售外联系统  v${config.version}`);
   console.log('  ─────────────────────────────────────────────');
   console.log(`  访问地址   ${url}`);
   console.log(`  监听地址   ${config.host}:${config.port}`);

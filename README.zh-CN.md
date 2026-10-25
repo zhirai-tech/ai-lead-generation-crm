@@ -1,8 +1,8 @@
-# ZHIRAI 欧洲 B2B AI 外贸获客平台
+# ZHIRAI AI 智能获客与销售外联系统
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-> 自托管的欧洲 B2B 获客工作台：产品资料 → 客户画像（ICP）→ 企业发现 → 可解释评分 → 个性化开发信 → 人工审批 → 邮件跟进 → 回复分类 → 销售管道。
+> 自托管的AI 智能获客工作台：产品资料 → 客户画像（ICP）→ 企业发现 → 可解释评分 → 个性化开发信 → 人工审批 → 邮件跟进 → 回复分类 → 销售管道。
 
 默认不自动群发；桌面测试包默认全局发送暂停。
 
@@ -18,7 +18,7 @@
 
 ### 下载
 
-[GitHub Releases](https://github.com/zhirai-tech/zhirai-europe-b2b-outreach/releases)
+[GitHub Releases](https://github.com/zhirai-tech/ai-lead-generation-crm/releases)
 
 - Windows 完整版：免安装 Node.js，解压后双击 `LAUNCH-ZHIRAI.bat`。
 - Windows 基础版：需要 Node.js 22.5+，解压后双击 `START-WINDOWS-BASIC.bat`。
@@ -77,8 +77,8 @@ npm test
 - [需求范围](REQUIREMENTS.md)
 - [贡献规范](CONTRIBUTING.md)
 - [项目规则](PROJECT_RULES.md)
-- [操作手册 PDF](docs/manual/ZHIRAI-1.1.0-1025-桌面版操作手册.pdf)
-- [操作手册 Word](docs/manual/ZHIRAI-1.1.0-1025-桌面版操作手册.docx)
+- [中文桌面版操作手册 PDF](docs/manual/ZHIRAI-AI-Lead-Generation-CRM-1.1.0-1025-Desktop-Manual-zh-CN.pdf)
+- [中文桌面版操作手册 Word](docs/manual/ZHIRAI-AI-Lead-Generation-CRM-1.1.0-1025-Desktop-Manual-zh-CN.docx)
 
 ### 规划
 
