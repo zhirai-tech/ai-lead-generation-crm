@@ -118,8 +118,17 @@ export function buildShell({ container, onLogout }) {
   }
 
   const footer = el('div', 'sidebar-footer');
+  const personalSite = el('a', 'personal-site', '个人网站 · zhinian-ai.com');
+  personalSite.href = 'https://zhinian-ai.com';
+  personalSite.target = '_blank';
+  personalSite.rel = 'noopener noreferrer';
+  personalSite.title = '智睿个人网站';
+  personalSite.style.color = 'inherit';
+  personalSite.style.textDecoration = 'none';
+  personalSite.style.opacity = '0.9';
   append(footer, [
     el('div', 'powered', 'Powered by 智睿'),
+    personalSite,
     el('div', '', 'Build Ideas Into Reality'),
     el('div', 'copyright', '© 2026 智睿科技 保留所有权利。'),
   ]);
