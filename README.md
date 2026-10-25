@@ -1,6 +1,6 @@
 # AI Lead Generation & Outreach CRM
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md) | [Personal Website](https://zhinian-ai.com)
 
 > A self-hosted AI lead generation and sales CRM workspace: product data → ICP → company discovery → explainable scoring → personalized drafts → human approval → email follow-up → reply classification → pipeline.
 
@@ -89,3 +89,9 @@ Not implemented yet: real human-labelled accuracy evaluation, more external sour
 Project code is licensed under the [MIT License](LICENSE). Redistributions must retain the copyright and permission notice; see [NOTICE](NOTICE). Third-party dependencies, assets and trademarks remain under their respective rights.
 
 ---
+
+---
+
+## Personal Website
+
+**ZHIRAI / 智睿科技** — [zhinian-ai.com](https://zhinian-ai.com)
