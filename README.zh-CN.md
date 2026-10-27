@@ -22,7 +22,12 @@
 
 - Windows 完整版：免安装 Node.js，解压后双击 `LAUNCH-ZHIRAI.bat`。
 - Windows 基础版：需要 Node.js 22.5+，解压后双击 `START-WINDOWS-BASIC.bat`。
-- macOS：仅 Apple Silicon（arm64），解压后打开 `ZHIRAI-Base.app`。
+- macOS：仅 Apple Silicon（M1–M4），要求 macOS 13 或以上。
+  - 这是 **`.tar.gz` 压缩包，不是 DMG/ISO 镜像**。
+  - 在 Finder 里双击解压，然后打开 `ZHIRAI-Base.app`。
+  - 如果被系统拦截，右键应用 →“打开”→ 再点“打开”。
+  - 不需要 Node.js，也不需要打开终端敲命令。
+  - 完整白话说明：[macOS 安装与使用说明](docs/MACOS-INSTALL-GUIDE-zh-CN.md)
 
 ### 当前能力
 
@@ -72,6 +77,7 @@ npm test
 
 ### 文档
 
+- [macOS 安装与使用说明](docs/MACOS-INSTALL-GUIDE-zh-CN.md)
 - [项目状态](PROJECT_STATUS.md)
 - [功能状态](FEATURE_STATUS.md)
 - [需求范围](REQUIREMENTS.md)

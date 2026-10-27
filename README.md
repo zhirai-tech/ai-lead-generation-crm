@@ -22,7 +22,12 @@ No automatic bulk sending by default. Desktop test builds ship with global sendi
 
 - Windows Full: no Node.js required; extract and run `LAUNCH-ZHIRAI.bat`.
 - Windows Basic: requires Node.js 22.5+; extract and run `START-WINDOWS-BASIC.bat`.
-- macOS: Apple Silicon (arm64) only; extract and open `ZHIRAI-Base.app`.
+- macOS: Apple Silicon (M1–M4) and macOS 13+ only.
+  - The package is a **`.tar.gz` archive, not a DMG/ISO image**.
+  - Double-click it in Finder to extract, then open `ZHIRAI-Base.app`.
+  - If macOS blocks the unsigned app: right-click the app → **Open** → **Open** again.
+  - No Node.js and no Terminal command are required.
+  - Full guide: [macOS installation guide](docs/MACOS-INSTALL-GUIDE.md)
 
 ### Current capabilities
 
@@ -72,6 +77,7 @@ Not yet fully validated: real-world company discovery, external search, website 
 
 ### Documentation
 
+- [macOS installation guide](docs/MACOS-INSTALL-GUIDE.md)
 - [Project status](PROJECT_STATUS.md)
 - [Feature status](FEATURE_STATUS.md)
 - [Requirements](REQUIREMENTS.md)
