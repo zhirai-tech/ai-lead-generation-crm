@@ -80,3 +80,32 @@ macOS 包是一个 **`.tar.gz` 压缩包**，不是磁盘镜像，也不是安�
 
 默认发送是暂停的（`GLOBAL_SEND_PAUSED=1`）。  
 在你配置好邮箱、合规信息并手动解除暂停之前，不会真实群发邮件。
+
+## 如果提示 “is damaged and can't be opened”
+
+这不是病毒，也不一定是下载损坏。  
+常见原因是：应用没有苹果签名，或者打包后文件被修改，macOS 认为签名无效。  
+“允许任意来源”这个设置不能解决这种签名错误。
+
+先点击 **Cancel**，不要点 Move to Trash。
+
+打开“终端”，执行：
+
+```bash
+cd ~/Downloads/ZHIRAI-1.1.0-1025-macOS-arm64
+xattr -cr ZHIRAI-Base.app
+codesign --force --deep --sign - ZHIRAI-Base.app
+open ZHIRAI-Base.app
+```
+
+如果应用已经拖到“应用程序”：
+
+```bash
+cd /Applications
+xattr -cr ZHIRAI-Base.app
+codesign --force --deep --sign - ZHIRAI-Base.app
+open ZHIRAI-Base.app
+```
+
+如果仍然提示无法验证开发者，再右键应用 →“打开”。  
+如果终端出现其他错误，把终端最后几行发回来。

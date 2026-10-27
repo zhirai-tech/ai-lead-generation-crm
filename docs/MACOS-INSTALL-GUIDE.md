@@ -76,3 +76,29 @@ Yes, dragging the `.app` is optional. Keep the app intact; do not move only the 
 ## First-run safety
 
 Sending is paused by default (`GLOBAL_SEND_PAUSED=1`). No real bulk email is sent until you configure email/compliance and explicitly enable sending.
+
+## If macOS says “is damaged and can’t be opened”
+
+This usually means the app is unsigned or its bundle signature became invalid after packaging. “Allow applications from Anywhere” does not fix an invalid signature.
+
+Click **Cancel**; do not move it to the Trash.
+
+Open Terminal and run:
+
+```bash
+cd ~/Downloads/ZHIRAI-1.1.0-1025-macOS-arm64
+xattr -cr ZHIRAI-Base.app
+codesign --force --deep --sign - ZHIRAI-Base.app
+open ZHIRAI-Base.app
+```
+
+If the app is already in Applications:
+
+```bash
+cd /Applications
+xattr -cr ZHIRAI-Base.app
+codesign --force --deep --sign - ZHIRAI-Base.app
+open ZHIRAI-Base.app
+```
+
+If macOS still says the developer cannot be verified, right-click the app → Open.
